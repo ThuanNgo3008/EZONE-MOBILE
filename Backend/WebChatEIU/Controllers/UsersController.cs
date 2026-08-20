@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -72,10 +72,13 @@ namespace WebChatEIU.Controllers
             // debug — tài khoản vẫn tạo xong, user có thể xin cấp lại code sau.
             try
             {
+                Console.WriteLine($"[REGISTER] About to send activation email to {newUser.Email}...");
                 await _emailService.SendActivationEmailAsync(newUser.Email, newUser.Fullname, activationCode);
+                Console.WriteLine($"[REGISTER] ✅ Email sent successfully to {newUser.Email}");
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[REGISTER] ❌ EMAIL FAILED: {ex.GetType().Name}: {ex.Message}");
                 _logger.LogError(ex, "Failed to send activation email to {Email}", newUser.Email);
             }
 

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using WebChatEIU.Data;
@@ -85,13 +85,17 @@ namespace WebChatEIU.Controllers
             }
 
             user.IsBanned = true;
+            user.BanSource = "Admin";
             report.Status = "Resolved";
 
             await _context.SaveChangesAsync();
 
             return Ok(new
             {
-                message = "Reported user has been banned."
+                message = "Reported user has been banned.",
+                reportedUserId = user.UserId,
+                isBanned = user.IsBanned,
+                banSource = user.BanSource
             });
         }
 
@@ -195,6 +199,23 @@ namespace WebChatEIU.Controllers
             var reports = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
+                .Join(
+                    _context.Users,
+                    r => r.ReportedUserId,
+                    u => u.UserId,
+                    (r, u) => new
+                    {
+                        r.ReportId,
+                        r.RoomId,
+                        r.ReporterId,
+                        r.ReportedUserId,
+                        r.Reason,
+                        r.ViolatingMessage,
+                        r.Status,
+                        r.CreatedAt,
+                        ReportedUserIsBanned = u.IsBanned,
+                        ReportedUserBanSource = u.BanSource
+                    })
                 .ToListAsync();
 
             return Ok(new

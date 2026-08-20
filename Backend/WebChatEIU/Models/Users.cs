@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -41,6 +41,9 @@ namespace WebChatEIU.Models
         public bool IsSearching { get; set; } = false;
 
         public bool IsBanned { get; set; } = false;
+
+        // "None" | "Admin" | "SystemAuto"
+        public string BanSource { get; set; } = "None";
 
         // Soft delete: tài khoản "xóa" chỉ bị ẩn/khoá đăng nhập, KHÔNG xoá dữ liệu
         // liên quan (ChatRooms/Messages/ChatReports) để không ảnh hưởng tới lịch sử

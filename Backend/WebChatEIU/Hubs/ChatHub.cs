@@ -153,6 +153,7 @@ namespace WebChatEIU.Hubs
                 if (user != null)
                 {
                     user.IsBanned = true;
+                    user.BanSource = "SystemAuto";
                     await _context.SaveChangesAsync();
                 }
 

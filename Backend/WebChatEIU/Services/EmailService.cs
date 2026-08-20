@@ -4,11 +4,6 @@ using MimeKit;
 
 namespace WebChatEIU.Services
 {
-    /// <summary>
-    /// Gửi email xác thực tài khoản qua SMTP (MailKit).
-    /// Nếu chưa cấu hình SMTP (Email:Host rỗng) → fallback log code ra console
-    /// để dev/demo chạy được mà không cần tài khoản SMTP thật.
-    /// </summary>
     public class EmailService : IEmailService
     {
         private readonly IConfiguration _configuration;
@@ -22,23 +17,34 @@ namespace WebChatEIU.Services
 
         public async Task SendActivationEmailAsync(string toEmail, string fullname, string activationCode)
         {
-            var host = _configuration["Email:Host"];
+            var host = _configuration["Email:Host"] ?? "smtp-relay.brevo.com";
+            var port = int.TryParse(_configuration["Email:Port"], out var parsedPort) ? parsedPort : 587;
+            var username = _configuration["Email:Username"];
+            var password = _configuration["Email:Password"];
+            var fromAddress = _configuration["Email:FromAddress"] ?? username;
+            var fromName = _configuration["Email:FromName"] ?? "EZone Support";
 
-            if (string.IsNullOrWhiteSpace(host))
+            // ── Diagnostic: dump resolved config ──
+            Console.WriteLine("═══════════════════════════════════════════");
+            Console.WriteLine("[BREVO SMTP] SendActivationEmailAsync CALLED");
+            Console.WriteLine($"[BREVO]   To:       {toEmail}");
+            Console.WriteLine($"[BREVO]   Host:     {host}:{port}");
+            Console.WriteLine($"[BREVO]   Username: {username}");
+            Console.WriteLine($"[BREVO]   Password: {(string.IsNullOrEmpty(password) ? "(EMPTY!)" : password[..Math.Min(10, password.Length)] + "...")}");
+            Console.WriteLine($"[BREVO]   From:     \"{fromName}\" <{fromAddress}>");
+            Console.WriteLine("═══════════════════════════════════════════");
+
+            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(password))
             {
+                Console.WriteLine("[BREVO] ⚠️ SKIP: Host or Password is empty — dev fallback mode");
                 _logger.LogWarning(
-                    "[DEV EMAIL] SMTP chưa được cấu hình (Email:Host rỗng trong appsettings). " +
-                    "Activation code cho {Email}: {Code}",
+                    "[DEV EMAIL] SMTP chưa được cấu hình. Activation code cho {Email}: {Code}",
                     toEmail, activationCode);
                 return;
             }
 
             var message = new MimeMessage();
-
-            message.From.Add(new MailboxAddress(
-                _configuration["Email:FromName"] ?? "EZone",
-                _configuration["Email:FromAddress"] ?? _configuration["Email:Username"]));
-
+            message.From.Add(new MailboxAddress(fromName, fromAddress));
             message.To.Add(new MailboxAddress(fullname, toEmail));
             message.Subject = "[EZone] Mã xác thực tài khoản của bạn";
 
@@ -47,22 +53,42 @@ namespace WebChatEIU.Services
                 HtmlBody = BuildHtmlBody(fullname, activationCode),
                 TextBody = BuildPlainTextBody(fullname, activationCode)
             };
-
             message.Body = bodyBuilder.ToMessageBody();
 
-            var port = int.TryParse(_configuration["Email:Port"], out var parsedPort) ? parsedPort : 587;
-            var useSsl = bool.TryParse(_configuration["Email:UseSsl"], out var parsedSsl) && parsedSsl;
+            try
+            {
+                using var client = new SmtpClient();
 
-            using var client = new SmtpClient();
+                Console.WriteLine($"[BREVO] 1/4 Connecting to {host}:{port} (StartTls)...");
+                await client.ConnectAsync(host, port, SecureSocketOptions.StartTls);
+                Console.WriteLine("[BREVO] 2/4 Connected ✅");
 
-            await client.ConnectAsync(
-                host,
-                port,
-                useSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls);
+                Console.WriteLine("[BREVO] 3/4 Authenticating...");
+                await client.AuthenticateAsync(username, password);
+                Console.WriteLine("[BREVO] 3/4 Authenticated ✅");
 
-            await client.AuthenticateAsync(_configuration["Email:Username"], _configuration["Email:Password"]);
-            await client.SendAsync(message);
-            await client.DisconnectAsync(true);
+                Console.WriteLine("[BREVO] 4/4 Sending message...");
+                await client.SendAsync(message);
+                Console.WriteLine("[BREVO] 4/4 Sent ✅");
+
+                await client.DisconnectAsync(true);
+
+                Console.WriteLine($"[DEV OTP] ✅ Sent to {toEmail}: {activationCode}");
+                _logger.LogInformation("[DEV OTP] Sent to {Email}: {Code}", toEmail, activationCode);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("═══════════════════════════════════════════");
+                Console.WriteLine($"[BREVO] ❌ SMTP FAILED: {ex.GetType().Name}");
+                Console.WriteLine($"[BREVO]   Message: {ex.Message}");
+                if (ex.InnerException != null)
+                    Console.WriteLine($"[BREVO]   Inner:   {ex.InnerException.Message}");
+                Console.WriteLine($"[BREVO]   Stack:   {ex.StackTrace}");
+                Console.WriteLine("═══════════════════════════════════════════");
+
+                _logger.LogError(ex, "SMTP send failed for {Email}. Host={Host}, Port={Port}", toEmail, host, port);
+                throw;
+            }
         }
 
         // ────────────────────────────────────────────────────────────────────
@@ -80,46 +106,21 @@ namespace WebChatEIU.Services
   <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"" />
 </head>
 <body style=""margin:0; padding:0; background-color:#f4f4f7; font-family:'Segoe UI',Roboto,Arial,sans-serif;"">
-
-  <!-- Outer wrapper -->
   <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0"" style=""background-color:#f4f4f7;"">
     <tr>
       <td align=""center"" style=""padding:40px 16px;"">
-
-        <!-- Card container -->
         <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0""
                style=""max-width:520px; background-color:#ffffff; border-radius:16px;
                       box-shadow:0 4px 24px rgba(0,0,0,0.08); overflow:hidden;"">
-
-          <!-- ===== Header Banner ===== -->
-          <tr>
-            <td style=""background: linear-gradient(135deg, #E91E63 0%, #FF5252 100%);
-                        padding:36px 32px; text-align:center;"">
-              <div style=""font-size:40px; margin-bottom:8px;"">🔐</div>
-              <h1 style=""margin:0; color:#ffffff; font-size:26px; font-weight:800;
-                         letter-spacing:0.5px;"">
-                EZone
-              </h1>
-              <p style=""margin:6px 0 0; color:rgba(255,255,255,0.9); font-size:14px; font-weight:500;"">
-                Anonymous Chat for EIU Students
-              </p>
-            </td>
-          </tr>
-
-          <!-- ===== Body Content ===== -->
           <tr>
             <td style=""padding:32px 32px 24px;"">
-
               <p style=""margin:0 0 8px; color:#1a1a2e; font-size:18px; font-weight:700;"">
                 Xin chào {fullname}! 👋
               </p>
-
               <p style=""margin:0 0 24px; color:#555; font-size:15px; line-height:1.6;"">
                 Cảm ơn bạn đã đăng ký tài khoản <strong style=""color:#E91E63;"">EZone</strong>.
                 Để hoàn tất việc đăng ký, vui lòng nhập mã xác thực bên dưới vào ứng dụng:
               </p>
-
-              <!-- OTP Code Box -->
               <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0"">
                 <tr>
                   <td align=""center"" style=""padding:8px 0 28px;"">
@@ -133,8 +134,6 @@ namespace WebChatEIU.Services
                   </td>
                 </tr>
               </table>
-
-              <!-- Security Warning -->
               <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0""
                      style=""background-color:#FFF8E1; border-left:4px solid #FFA000;
                             border-radius:8px; margin-bottom:24px;"">
@@ -148,22 +147,16 @@ namespace WebChatEIU.Services
                   </td>
                 </tr>
               </table>
-
               <p style=""margin:0; color:#888; font-size:13px; line-height:1.5; text-align:center;"">
                 Nếu bạn không đăng ký tài khoản EZone, vui lòng bỏ qua email này.
               </p>
-
             </td>
           </tr>
-
-          <!-- Divider -->
           <tr>
             <td style=""padding:0 32px;"">
               <hr style=""border:none; border-top:1px solid #eee; margin:0;"" />
             </td>
           </tr>
-
-          <!-- ===== Footer ===== -->
           <tr>
             <td style=""padding:20px 32px 28px; text-align:center;"">
               <p style=""margin:0 0 4px; color:#aaa; font-size:12px;"">
@@ -178,20 +171,16 @@ namespace WebChatEIU.Services
               </p>
             </td>
           </tr>
-
         </table>
-        <!-- /Card -->
-
       </td>
     </tr>
   </table>
-
 </body>
 </html>";
         }
 
         // ────────────────────────────────────────────────────────────────────
-        //  Plain-text fallback (khi mail client không hỗ trợ HTML)
+        //  Plain-text fallback
         // ────────────────────────────────────────────────────────────────────
         private static string BuildPlainTextBody(string fullname, string code)
         {
