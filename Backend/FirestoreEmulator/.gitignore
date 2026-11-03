@@ -1,0 +1,8 @@
+node_modules/
+.firebase/
+.cache/
+emulators/
+emulator-data/
+firebase-export-*/
+*.jar
+*.log
