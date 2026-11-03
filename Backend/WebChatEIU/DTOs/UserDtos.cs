@@ -1,4 +1,4 @@
-﻿
+
 using System.ComponentModel.DataAnnotations;
 
 namespace WebChatEIU.DTOs
@@ -80,33 +80,4 @@ namespace WebChatEIU.DTOs
             ErrorMessage = "Email must belong to EIU")]
         public string Email { get; set; } = string.Empty;
     }
-
-
-    public class ActivateDto
-    {
-        public string Email { get; set; } = string.Empty;
-        public string Code { get; set; } = string.Empty;
-    }
-
-
-    public class LoginDto
-    {
-        public string Email { get; set; } = string.Empty;
-        public string Password { get; set; } = string.Empty;
-    }
-
-    public class UpdateUserDto
-    {
-        public string Fullname { get; set; } = string.Empty;
-        public string? Gender { get; set; }
-        public string? MajorCode { get; set; }
-        public string? SocialLink { get; set; }
-        public IFormFile? AvatarFile { get; set; }
-    }
-
-    public class DeleteAccountDto
-    {
-        public string Password { get; set; } = string.Empty;
-    }
-
 }

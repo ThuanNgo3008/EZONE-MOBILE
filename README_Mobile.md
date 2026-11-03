@@ -1,3 +1,5 @@
+> Historical frontend planning document. Its endpoint examples describe the previous client; use [current backend documentation](Backend/README.md) for EZone 2.0.
+
 # EZone Mobile — Tài liệu kỹ thuật (as-built)
 
 > File này trước đây là bản **kế hoạch triển khai** (task list trước khi code).

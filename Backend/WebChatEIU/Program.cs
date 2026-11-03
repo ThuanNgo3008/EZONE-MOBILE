@@ -1,14 +1,10 @@
 
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using System.Security.Claims;
-using System.Text;
 using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
-using WebChatEIU.Data;
 using WebChatEIU.Hubs;
 using WebChatEIU.Services;
 using Microsoft.AspNetCore.RateLimiting;
@@ -55,22 +51,11 @@ namespace WebChatEIU
             builder.Services.AddHostedService<FirebaseRoomExpirationWorker>();
 
             // ===========================
-            // SQL SERVER (LEGACY)
-            // ===========================
-            builder.Services.AddDbContext<ApplicationDbContext>(
-                options => options.UseSqlServer(
-                    builder.Configuration.GetConnectionString(
-                        "DefaultConnection")
-                )
-            );
-
-            // ===========================
             // SERVICES
             // ===========================
             builder.Services.AddControllers();
             builder.Services.AddSignalR();
 
-            builder.Services.AddSingleton<MatchmakingService>();
             builder.Services.AddSingleton<ModerationService>();
             builder.Services.AddScoped<IEmailService, EmailService>();
 
@@ -114,41 +99,7 @@ namespace WebChatEIU
             // AUTHENTICATION
             // ===========================
             builder.Services
-                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-
-                // JWT cũ - SQL Server
-                .AddJwtBearer(
-                    JwtBearerDefaults.AuthenticationScheme,
-                    options =>
-                    {
-                        options.TokenValidationParameters =
-                            new TokenValidationParameters
-                            {
-                                ValidateIssuer = true,
-                                ValidateAudience = true,
-                                ValidateLifetime = true,
-                                ValidateIssuerSigningKey = true,
-
-                                ValidIssuer =
-                                    builder.Configuration["Jwt:Issuer"],
-
-                                ValidAudience =
-                                    builder.Configuration["Jwt:Audience"],
-
-                                IssuerSigningKey =
-                                    new SymmetricSecurityKey(
-                                        Encoding.UTF8.GetBytes(
-                                            builder.Configuration["Jwt:Key"]
-                                            ?? throw new InvalidOperationException(
-                                                "JWT key is missing."
-                                            )
-                                        )
-                                    )
-                            };
-                    }
-                )
-
-                // Firebase ID Token 
+                .AddAuthentication("Firebase")
                 .AddJwtBearer("Firebase", options =>
                 {
                     options.Authority =
@@ -200,19 +151,6 @@ namespace WebChatEIU
             // ===========================
             builder.Services.AddAuthorization(options =>
             {
-                // Legacy policies
-                options.AddPolicy("AdminOnly", policy =>
-                    policy.RequireRole("Admin"));
-
-                options.AddPolicy("ManageReports", policy =>
-                    policy.RequireRole("Admin"));
-
-                options.AddPolicy("ActiveUserOnly", policy =>
-                    policy.RequireClaim("IsActive", "True"));
-
-                options.AddPolicy("NonBannedUser", policy =>
-                    policy.RequireClaim("IsBanned", "False"));
-
                 // Firebase authentication policy
                 options.AddPolicy("FirebaseUser", policy =>
                 {
@@ -243,7 +181,7 @@ namespace WebChatEIU
                         Scheme = "bearer",
                         BearerFormat = "JWT",
                         In = ParameterLocation.Header,
-                        Description = "Enter JWT or Firebase ID Token"
+                        Description = "Enter Firebase ID Token"
                     });
 
                 options.AddSecurityRequirement(
@@ -294,7 +232,6 @@ namespace WebChatEIU
             // ENDPOINTS
             // ===========================
             app.MapControllers();
-            app.MapHub<ChatHub>("/chatHub");
             app.MapHub<FirebaseChatHub>("/firebaseChatHub");
 
             app.Run();

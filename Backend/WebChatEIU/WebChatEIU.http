@@ -1,6 +1,6 @@
 @WebChatEIU_HostAddress = http://localhost:5044
+@FirebaseIdToken = REPLACE_WITH_FIREBASE_ID_TOKEN
 
-GET {{WebChatEIU_HostAddress}}/weatherforecast/
+GET {{WebChatEIU_HostAddress}}/api/firebase-session/me
+Authorization: Bearer {{FirebaseIdToken}}
 Accept: application/json
-
-###
