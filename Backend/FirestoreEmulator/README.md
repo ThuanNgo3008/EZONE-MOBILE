@@ -95,8 +95,8 @@ dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.cspr
 ```
 
 The integration project now includes 22 safety cases, one disposable smoke test,
-and 41 Random Match/reservation cases. Run-Smoke.ps1 runs the complete integration
-project, including these matching cases. They instantiate the production queue and
+41 Random Match/reservation cases, and 38 lifecycle/reporting/cleanup cases.
+Run-Smoke.ps1 runs the complete integration project, including these cases. They instantiate the production queue and
 reservation services directly with the guarded emulator database; no API is started.
 
 Matching coverage includes queue presence, pagination beyond 20 candidates,
@@ -113,7 +113,22 @@ in-flight SDK operation; stop the disposable emulator if a run times out, and do
 not continue using that test process. No delays simulate the 30/60-second rules;
 fixtures seed past timestamps instead. Unrelated cases remain serialized.
 
-SignalR, Auth, subsequent room decisions/reporting, and workers are not exercised.
+Lifecycle coverage uses real matched pairs, controlled room deadlines, duplicate
+and simultaneous decisions, decision-versus-expiration transactions, unmatch with
+read-only message history, evidence snapshots, multi-batch cleanup (401 messages),
+and interrupted-cleanup retry fixtures. Nested messages, decisions, reports, and
+evidence are deleted only for each test's owned rooms before the existing matching
+fixture removes its users/sessions/rooms/history. No global emulator reset is used.
+
+Terminal decision retries are rejected by the existing implementation; only waiting
+duplicates are accepted. The cleanup service leaves CleanupPending set; clearing it
+belongs to the untested worker. Empty User reports may have EvidenceCaptured=false;
+cleanup permits these only when no messages remain. These existing behaviors are
+characterized without changing production logic. Deadline races use past/future
+fixtures, not real-time boundary waits. Race waits retain the 90-second SDK
+cancellation limitation documented above.
+
+SignalR, Auth, and hosted worker orchestration are not exercised.
 The emulator does not prove production index requirements or contention behavior.
 
 References:
