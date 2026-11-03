@@ -94,9 +94,26 @@ Safety validation only (no emulator, no client construction):
 dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.csproj --no-build --no-restore --filter Category=Safety
 ```
 
-Integration coverage in this phase is deliberately limited to endpoint/project
-safety guards and one disposable create/read/delete smoke test. Matching,
-reservations, transactions, SignalR, Auth, and workers are not exercised yet.
+The integration project now includes 22 safety cases, one disposable smoke test,
+and 41 Random Match/reservation cases. Run-Smoke.ps1 runs the complete integration
+project, including these matching cases. They instantiate the production queue and
+reservation services directly with the guarded emulator database; no API is started.
+
+Matching coverage includes queue presence, pagination beyond 20 candidates,
+reservation/session ownership, the 30-second deadline, two-sided Ready, retries,
+cancellation, controlled expiration and requeue rules, and replacement-session
+protection. Each test owns unique users and deletes only documents referring to
+those users. No business collections are renamed or given extra fixture fields.
+
+Each of the three race scenarios (competing reservations, concurrent Ready, and
+Ready versus Cancel) has three separately seeded trials with a shared start gate
+and a 90-second wait bound. Transaction calls are not mocked. Because current
+service methods expose no cancellation token, the wait bound does not cancel an
+in-flight SDK operation; stop the disposable emulator if a run times out, and do
+not continue using that test process. No delays simulate the 30/60-second rules;
+fixtures seed past timestamps instead. Unrelated cases remain serialized.
+
+SignalR, Auth, subsequent room decisions/reporting, and workers are not exercised.
 The emulator does not prove production index requirements or contention behavior.
 
 References:
