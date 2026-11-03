@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../constants/config';
+import { API_BASE_URL, FIREBASE_API_KEY } from '../constants/config';
 import { getSession } from './storage';
 
 export async function apiRequest(endpoint, options = {}) {
@@ -42,6 +42,98 @@ export function login(email, password) {
     body: JSON.stringify({ email, password }),
   });
 }
+
+
+export async function firebaseLogin(email, password) {
+  // 1. Đăng nhập bằng Firebase Authentication
+  const authResponse = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: email.trim(),
+        password,
+        returnSecureToken: true,
+      }),
+    },
+  );
+
+  const authData = await authResponse.json();
+
+  if (!authResponse.ok) {
+    throw new Error('Email hoặc mật khẩu không chính xác.');
+  }
+
+  // 2. Backend kiểm tra trạng thái tài khoản
+  const sessionResponse = await fetch(
+    `${API_BASE_URL}/firebase-session/me`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${authData.idToken}`,
+      },
+    },
+  );
+
+  const sessionData = await sessionResponse.json();
+
+  if (!sessionResponse.ok) {
+    throw new Error(
+      sessionData?.message ||
+      'Tài khoản chưa được phép truy cập EZone.',
+    );
+  }
+
+  // 3. Trả về phiên đăng nhập Firebase
+  return {
+    token: authData.idToken,
+    refreshToken: authData.refreshToken,
+    expiresIn: Number(authData.expiresIn),
+    userId: sessionData.userId,
+    fullname: sessionData.fullname,
+    roles: [],
+  };
+}
+
+
+export async function refreshFirebaseToken(refreshToken) {
+  if (!refreshToken) {
+    throw new Error('Phiên đăng nhập không hợp lệ.');
+  }
+
+  const response = await fetch(
+    `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body:
+        'grant_type=refresh_token&refresh_token=' +
+        encodeURIComponent(refreshToken),
+    },
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+    );
+  }
+
+  return {
+    token: data.id_token,
+    refreshToken: data.refresh_token,
+    expiresIn: Number(data.expires_in),
+    userId: data.user_id,
+  };
+}
+
+
 
 export function registerUser({ fullname, email, password, majorCode }) {
   return apiRequest('/Users/register', {
@@ -148,7 +240,7 @@ export function updateProfile(userId, { fullname, gender, majorCode, socialLink,
   form.append('Gender', gender ?? '');
   form.append('MajorCode', majorCode ?? '');
   form.append('SocialLink', socialLink ?? '');
-  
+
   if (avatarFile) {
     form.append('AvatarFile', {
       uri: avatarFile.uri,

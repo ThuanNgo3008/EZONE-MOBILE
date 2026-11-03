@@ -1,96 +1,148 @@
+
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using MimeKit;
+using System.Net;
 
 namespace WebChatEIU.Services
 {
     public class EmailService : IEmailService
     {
-        private readonly IConfiguration _configuration;
-        private readonly ILogger<EmailService> _logger;
+        private readonly string _gmail;
+        private readonly string _appPassword;
 
-        public EmailService(IConfiguration configuration, ILogger<EmailService> logger)
+        public EmailService(IConfiguration configuration)
         {
-            _configuration = configuration;
-            _logger = logger;
+            _gmail = configuration["Gmail:Email"]
+                ?? throw new InvalidOperationException(
+                    "Missing Gmail:Email.");
+
+            _appPassword = configuration["Gmail:AppPassword"]
+                ?.Replace(" ", "")
+                ?? throw new InvalidOperationException(
+                    "Missing Gmail:AppPassword.");
         }
 
-        public async Task SendActivationEmailAsync(string toEmail, string fullname, string activationCode)
+        // Hàm gửi email chung qua Gmail
+        private async Task SendEmailAsync(
+            string toEmail,
+            string toName,
+            string subject,
+            string htmlBody,
+            string textBody)
         {
-            var host = _configuration["Email:Host"] ?? "smtp-relay.brevo.com";
-            var port = int.TryParse(_configuration["Email:Port"], out var parsedPort) ? parsedPort : 587;
-            var username = _configuration["Email:Username"];
-            var password = _configuration["Email:Password"];
-            var fromAddress = _configuration["Email:FromAddress"] ?? username;
-            var fromName = _configuration["Email:FromName"] ?? "EZone Support";
-
-            // ── Diagnostic: dump resolved config ──
-            Console.WriteLine("═══════════════════════════════════════════");
-            Console.WriteLine("[BREVO SMTP] SendActivationEmailAsync CALLED");
-            Console.WriteLine($"[BREVO]   To:       {toEmail}");
-            Console.WriteLine($"[BREVO]   Host:     {host}:{port}");
-            Console.WriteLine($"[BREVO]   Username: {username}");
-            Console.WriteLine($"[BREVO]   Password: {(string.IsNullOrEmpty(password) ? "(EMPTY!)" : password[..Math.Min(10, password.Length)] + "...")}");
-            Console.WriteLine($"[BREVO]   From:     \"{fromName}\" <{fromAddress}>");
-            Console.WriteLine("═══════════════════════════════════════════");
-
-            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(password))
-            {
-                Console.WriteLine("[BREVO] ⚠️ SKIP: Host or Password is empty — dev fallback mode");
-                _logger.LogWarning(
-                    "[DEV EMAIL] SMTP chưa được cấu hình. Activation code cho {Email}: {Code}",
-                    toEmail, activationCode);
-                return;
-            }
-
             var message = new MimeMessage();
-            message.From.Add(new MailboxAddress(fromName, fromAddress));
-            message.To.Add(new MailboxAddress(fullname, toEmail));
-            message.Subject = "[EZone] Mã xác thực tài khoản của bạn";
 
-            var bodyBuilder = new BodyBuilder
+            message.From.Add(
+                new MailboxAddress("EZone Support", _gmail));
+
+            message.To.Add(
+                new MailboxAddress(toName, toEmail));
+
+            message.Subject = subject;
+
+            message.Body = new BodyBuilder
             {
-                HtmlBody = BuildHtmlBody(fullname, activationCode),
-                TextBody = BuildPlainTextBody(fullname, activationCode)
-            };
-            message.Body = bodyBuilder.ToMessageBody();
+                HtmlBody = htmlBody,
+                TextBody = textBody
+            }.ToMessageBody();
+
+            using var client = new SmtpClient();
 
             try
             {
-                using var client = new SmtpClient();
+                await client.ConnectAsync(
+                    "smtp.gmail.com",
+                    587,
+                    SecureSocketOptions.StartTls);
 
-                Console.WriteLine($"[BREVO] 1/4 Connecting to {host}:{port} (StartTls)...");
-                await client.ConnectAsync(host, port, SecureSocketOptions.StartTls);
-                Console.WriteLine("[BREVO] 2/4 Connected ✅");
+                await client.AuthenticateAsync(
+                    _gmail,
+                    _appPassword);
 
-                Console.WriteLine("[BREVO] 3/4 Authenticating...");
-                await client.AuthenticateAsync(username, password);
-                Console.WriteLine("[BREVO] 3/4 Authenticated ✅");
-
-                Console.WriteLine("[BREVO] 4/4 Sending message...");
                 await client.SendAsync(message);
-                Console.WriteLine("[BREVO] 4/4 Sent ✅");
-
-                await client.DisconnectAsync(true);
-
-                Console.WriteLine($"[DEV OTP] ✅ Sent to {toEmail}: {activationCode}");
-                _logger.LogInformation("[DEV OTP] Sent to {Email}: {Code}", toEmail, activationCode);
             }
-            catch (Exception ex)
+            finally
             {
-                Console.WriteLine("═══════════════════════════════════════════");
-                Console.WriteLine($"[BREVO] ❌ SMTP FAILED: {ex.GetType().Name}");
-                Console.WriteLine($"[BREVO]   Message: {ex.Message}");
-                if (ex.InnerException != null)
-                    Console.WriteLine($"[BREVO]   Inner:   {ex.InnerException.Message}");
-                Console.WriteLine($"[BREVO]   Stack:   {ex.StackTrace}");
-                Console.WriteLine("═══════════════════════════════════════════");
-
-                _logger.LogError(ex, "SMTP send failed for {Email}. Host={Host}, Port={Port}", toEmail, host, port);
-                throw;
+                if (client.IsConnected)
+                {
+                    await client.DisconnectAsync(true);
+                }
             }
         }
 
+        // Gửi OTP cho hệ thống đăng ký cũ
+        public async Task SendActivationEmailAsync(
+            string toEmail,
+            string fullname,
+            string activationCode)
+        {
+            await SendEmailAsync(
+                toEmail,
+                fullname,
+                "[EZone] Mã xác thực tài khoản",
+                BuildHtmlBody(fullname, activationCode),
+                BuildPlainTextBody(fullname, activationCode)
+            );
+        }
+
+        // Gửi link xác thực Firebase Authentication
+        public async Task SendVerificationLinkAsync(
+            string toEmail,
+            string fullname,
+            string verificationLink)
+        {
+            var safeName = WebUtility.HtmlEncode(fullname);
+            var safeLink = WebUtility.HtmlEncode(verificationLink);
+
+            var html = $"""
+                <div style="font-family:Arial,sans-serif;
+                            max-width:550px;
+                            margin:auto;
+                            padding:30px;">
+                    <h2>Welcome to EZone!</h2>
+
+                    <p>Xin chào {safeName},</p>
+
+                    <p>
+                        Cảm ơn bạn đã đăng ký EZone.
+                        Vui lòng xác thực email để
+                        kích hoạt tài khoản.
+                    </p>
+
+                    <p style="margin:30px 0;">
+                        <a href="{safeLink}"
+                           style="background:#E91E63;
+                                  padding:14px 24px;
+                                  color:white;
+                                  border-radius:8px;
+                                  text-decoration:none;">
+                            Xác thực tài khoản
+                        </a>
+                    </p>
+
+                    <p>
+                        Nếu bạn không đăng ký EZone,
+                        hãy bỏ qua email này.
+                    </p>
+                </div>
+                """;
+
+            var text =
+                $"Xin chào {fullname}!\n\n" +
+                "Vui lòng xác thực tài khoản EZone:\n" +
+                verificationLink;
+
+            await SendEmailAsync(
+                toEmail,
+                fullname,
+                "[EZone] Xác thực tài khoản",
+                html,
+                text
+            );
+        }
+
+        
         // ────────────────────────────────────────────────────────────────────
         //  HTML Email Template
         // ────────────────────────────────────────────────────────────────────

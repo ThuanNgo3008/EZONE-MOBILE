@@ -1,12 +1,18 @@
+
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using System.Security.Claims;
+using System.Text;
+using FirebaseAdmin;
+using Google.Apis.Auth.OAuth2;
+using Google.Cloud.Firestore;
 using WebChatEIU.Data;
 using WebChatEIU.Hubs;
 using WebChatEIU.Services;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
-using System.Text;
-using Microsoft.OpenApi.Models;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 
 namespace WebChatEIU
 {
@@ -15,9 +21,84 @@ namespace WebChatEIU
         public static void Main(string[] args)
         {
             var builder = WebApplication.CreateBuilder(args);
-           
 
-            // Add services to the container.
+            // ===========================
+            // FIREBASE ADMIN SDK
+            // ===========================
+            if (FirebaseApp.DefaultInstance == null)
+            {
+                FirebaseApp.Create(new AppOptions
+                {
+                    Credential = GoogleCredential.GetApplicationDefault(),
+                    ProjectId = "ezone-afa80"
+                });
+            }
+
+            // ===========================
+            // FIREBASE FIRESTORE
+            // ===========================
+            builder.Services.AddSingleton(
+                FirestoreDb.Create("ezone-afa80")
+            );
+
+            builder.Services.AddScoped<FirebaseTokenService>();
+            builder.Services.AddScoped<FirebaseAuthService>();
+            builder.Services.AddScoped<FirebaseUserService>();
+            builder.Services.AddScoped<FirebaseChatRoomService>();
+            builder.Services.AddScoped<FirebaseChatMessageService>();
+            builder.Services.AddScoped<FirebaseRoomDecisionService>();
+            builder.Services.AddScoped<FirebaseMatchHistoryService>();
+            builder.Services.AddScoped<FirebaseTemporaryMessageCleanupService>();
+            builder.Services.AddScoped<FirebaseReportService>();
+            builder.Services.AddScoped<FirebaseMatchReservationService>();
+            builder.Services.AddScoped<FirebaseRandomMatchQueueService>();
+            builder.Services.AddHostedService<FirebaseRoomExpirationWorker>();
+
+            // ===========================
+            // SQL SERVER (LEGACY)
+            // ===========================
+            builder.Services.AddDbContext<ApplicationDbContext>(
+                options => options.UseSqlServer(
+                    builder.Configuration.GetConnectionString(
+                        "DefaultConnection")
+                )
+            );
+
+            // ===========================
+            // SERVICES
+            // ===========================
+            builder.Services.AddControllers();
+            builder.Services.AddSignalR();
+
+            builder.Services.AddSingleton<MatchmakingService>();
+            builder.Services.AddSingleton<ModerationService>();
+            builder.Services.AddScoped<IEmailService, EmailService>();
+
+            // ===========================
+            // RATE LIMITING
+            // ===========================
+            builder.Services.AddRateLimiter(options =>
+            {
+                options.RejectionStatusCode =
+                    StatusCodes.Status429TooManyRequests;
+
+                options.AddPolicy("ResendVerification", context =>
+                    RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey:
+                            context.Connection.RemoteIpAddress?.ToString()
+                            ?? "unknown",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 3,
+                            Window = TimeSpan.FromMinutes(15),
+                            QueueLimit = 0,
+                            AutoReplenishment = true
+                        }));
+            });
+
+            // ===========================
+            // CORS
+            // ===========================
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("AllowReactApp", policy =>
@@ -28,105 +109,193 @@ namespace WebChatEIU
                           .AllowCredentials();
                 });
             });
-            builder.Services.AddControllers();
-            builder.Services.AddSignalR();
-            builder.Services.AddSingleton<MatchmakingService>();
-            builder.Services.AddSingleton<ModerationService>();
-            builder.Services.AddScoped<IEmailService, EmailService>();
-            builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
-            {
-                options.TokenValidationParameters = new TokenValidationParameters
+
+            // ===========================
+            // AUTHENTICATION
+            // ===========================
+            builder.Services
+                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+
+                // JWT cũ - SQL Server
+                .AddJwtBearer(
+                    JwtBearerDefaults.AuthenticationScheme,
+                    options =>
+                    {
+                        options.TokenValidationParameters =
+                            new TokenValidationParameters
+                            {
+                                ValidateIssuer = true,
+                                ValidateAudience = true,
+                                ValidateLifetime = true,
+                                ValidateIssuerSigningKey = true,
+
+                                ValidIssuer =
+                                    builder.Configuration["Jwt:Issuer"],
+
+                                ValidAudience =
+                                    builder.Configuration["Jwt:Audience"],
+
+                                IssuerSigningKey =
+                                    new SymmetricSecurityKey(
+                                        Encoding.UTF8.GetBytes(
+                                            builder.Configuration["Jwt:Key"]
+                                            ?? throw new InvalidOperationException(
+                                                "JWT key is missing."
+                                            )
+                                        )
+                                    )
+                            };
+                    }
+                )
+
+                // Firebase ID Token 
+                .AddJwtBearer("Firebase", options =>
                 {
-                    ValidateIssuer = true,
-                    ValidateAudience = true,
-                    ValidateLifetime = true,
-                    ValidateIssuerSigningKey = true,
+                    options.Authority =
+                        "https://securetoken.google.com/ezone-afa80";
 
-                    ValidIssuer = builder.Configuration["Jwt:Issuer"],
-                    ValidAudience = builder.Configuration["Jwt:Audience"],
-
-                    IssuerSigningKey = new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])
-                    )
-                };
-            });
+                    options.RequireHttpsMetadata = true;
+                    options.MapInboundClaims = false;
 
 
+                    options.Events = new JwtBearerEvents
+                    {
+                        OnMessageReceived = context =>
+                        {
+                            var accessToken =
+                                context.Request.Query["access_token"];
+
+                            var path = context.HttpContext.Request.Path;
+
+                            if (!string.IsNullOrEmpty(accessToken) &&
+                                path.StartsWithSegments("/firebaseChatHub"))
+                            {
+                                context.Token = accessToken;
+                            }
+
+                            return Task.CompletedTask;
+                        }
+                    };
+
+
+                    options.TokenValidationParameters =
+                        new TokenValidationParameters
+                        {
+                            ValidateIssuer = true,
+                            ValidIssuer =
+                                "https://securetoken.google.com/ezone-afa80",
+
+                            ValidateAudience = true,
+                            ValidAudience = "ezone-afa80",
+
+                            ValidateLifetime = true,
+                            ValidateIssuerSigningKey = true,
+
+                            NameClaimType = "user_id"
+                        };
+                });
+
+            // ===========================
+            // AUTHORIZATION
+            // ===========================
             builder.Services.AddAuthorization(options =>
             {
-                // Chỉ Admin mới được quản lý hệ thống
-                options.AddPolicy("AdminOnly", policy => policy.RequireRole("Admin"));
+                // Legacy policies
+                options.AddPolicy("AdminOnly", policy =>
+                    policy.RequireRole("Admin"));
 
-                // Chỉ Admin mới được xem report người dùng
-                options.AddPolicy("ManageReports", policy => policy.RequireRole("Admin"));
+                options.AddPolicy("ManageReports", policy =>
+                    policy.RequireRole("Admin"));
 
-                // Chỉ user đã kích hoạt tài khoản mới được truy cập
-                options.AddPolicy("ActiveUserOnly", policy => policy.RequireClaim("IsActive", "True"));
+                options.AddPolicy("ActiveUserOnly", policy =>
+                    policy.RequireClaim("IsActive", "True"));
 
-                // Chỉ user chưa bị ban mới được sử dụng chat
-                options.AddPolicy("NonBannedUser", policy => policy.RequireClaim("IsBanned", "False"));
+                options.AddPolicy("NonBannedUser", policy =>
+                    policy.RequireClaim("IsBanned", "False"));
 
+                // Firebase authentication policy
+                options.AddPolicy("FirebaseUser", policy =>
+                {
+                    policy.AddAuthenticationSchemes("Firebase");
+                    policy.RequireAuthenticatedUser();
+                });
             });
 
-            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            // ===========================
+            // SWAGGER
+            // ===========================
             builder.Services.AddEndpointsApiExplorer();
+
             builder.Services.AddSwaggerGen(options =>
             {
                 options.SwaggerDoc("v1", new OpenApiInfo
                 {
-                    Title = "Library API",
+                    Title = "EZone API",
                     Version = "v1"
                 });
 
-                options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-                {
-                    Name = "Authorization",
-                    Type = SecuritySchemeType.Http,
-                    Scheme = "bearer",
-                    BearerFormat = "JWT",
-                    In = ParameterLocation.Header,
-                    Description = "Enter JWT token"
-                });
-
-                options.AddSecurityRequirement(new OpenApiSecurityRequirement
-                {
+                options.AddSecurityDefinition(
+                    "Bearer",
+                    new OpenApiSecurityScheme
                     {
-                        new OpenApiSecurityScheme
-                        {
-                            Reference = new OpenApiReference
-                            {
-                                Type = ReferenceType.SecurityScheme,
-                                Id = "Bearer"
-                            }
-                        },
-                        Array.Empty<string>()
-                    }
-                });
-            });
-            builder.Services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+                        Name = "Authorization",
+                        Type = SecuritySchemeType.Http,
+                        Scheme = "bearer",
+                        BearerFormat = "JWT",
+                        In = ParameterLocation.Header,
+                        Description = "Enter JWT or Firebase ID Token"
+                    });
 
+                options.AddSecurityRequirement(
+                    new OpenApiSecurityRequirement
+                    {
+                        {
+                            new OpenApiSecurityScheme
+                            {
+                                Reference = new OpenApiReference
+                                {
+                                    Type = ReferenceType.SecurityScheme,
+                                    Id = "Bearer"
+                                }
+                            },
+                            Array.Empty<string>()
+                        }
+                    });
+            });
+
+            // ===========================
+            // BUILD APPLICATION
+            // ===========================
             var app = builder.Build();
 
-            // Configure the HTTP request pipeline.
-            if (app.Environment.IsDevelopment() || app.Environment.EnvironmentName == "Docker")
+            // ===========================
+            // MIDDLEWARE
+            // ===========================
+            if (app.Environment.IsDevelopment()
+                || app.Environment.EnvironmentName == "Docker")
             {
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
 
             app.UseHttpsRedirection();
-
             app.UseStaticFiles();
+
+            app.UseRouting();
 
             app.UseCors("AllowReactApp");
 
-            app.UseAuthentication();
+            app.UseRateLimiter();
 
+            app.UseAuthentication();
             app.UseAuthorization();
 
-
+            // ===========================
+            // ENDPOINTS
+            // ===========================
             app.MapControllers();
             app.MapHub<ChatHub>("/chatHub");
+            app.MapHub<FirebaseChatHub>("/firebaseChatHub");
 
             app.Run();
         }
