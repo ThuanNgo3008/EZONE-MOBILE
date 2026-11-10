@@ -1,8 +1,9 @@
-# Isolated Firestore regression environment
+# Isolated Firebase regression environment
 
 This tooling is test-only. Never run the production API or Program.Main for these
 checks. No Firebase login, service-account key, or Application Default Credentials
-are required. No Auth emulator or background worker is started.
+are required. Only local Firestore and Auth emulators are started; no API or hosted
+background worker is started.
 
 ## Install and build (from repository root)
 
@@ -29,7 +30,8 @@ it does not upgrade package versions. Vulnerability auditing is separate.
 ```
 
 This sets process-scoped test environment variables, clears inherited service-account
-and Firebase CLI token variables temporarily, runs only the separate integration
+and Firebase CLI token variables temporarily, sets both emulator hosts, starts
+Firestore and Auth, runs only the separate integration
 project via emulators:exec, then shuts the emulator down and restores environment
 variables. It does not run the production solution or existing offline project.
 Do not interrupt the wrapper unless necessary; ensure the CLI reports shutdown.
@@ -49,15 +51,16 @@ Terminal B (repository root, dedicated disposable terminal):
 ```powershell
 $env:EZONE_TEST_PROJECT_ID = 'demo-ezone-regression'
 $env:FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+$env:FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099'
 $env:GOOGLE_APPLICATION_CREDENTIALS = $null
 dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.csproj --no-build --no-restore
 # Close this dedicated terminal after the run.
 ```
 
 No Firebase login/deploy/export/import commands are needed. Never substitute the
-production project. No emulator data is exported; smoke documents are deleted in
-finally, and emulator state is disposable on shutdown. Do not reset a shared
-emulator database; the fixture owns only its unique regressionSmoke document.
+production project. No emulator data is exported; smoke documents and accounts are
+deleted in finally, and emulator state is disposable on shutdown. Do not reset a
+shared emulator database; fixtures delete only their uniquely owned test data.
 
 ## Safety boundaries
 
@@ -68,10 +71,10 @@ emulator database; the fixture owns only its unique regressionSmoke document.
   IPs, wildcard addresses, URL schemes, paths, and userinfo are rejected.
 - Client construction revalidates environment and explicitly uses
   EmulatorDetection.EmulatorOnly. There is no production fallback or ADC lookup.
-- The SDK uses an unauthenticated emulator transport; no credentials are assigned.
+- The Firestore SDK uses an unauthenticated emulator transport; no credentials are assigned.
 - CLI Firestore binds 127.0.0.1:8085; hub 127.0.0.1:4405; logging 127.0.0.1:4505.
   Its auxiliary Firestore websocket also uses 127.0.0.1:9150 even with UI disabled.
-  All four ports must be free before starting.
+  Auth binds 127.0.0.1:9099. All five ports must be free before starting.
 - firestore.rules denies client SDK access. The server Firestore SDK bypasses
   rules, as expected; this suite tests server persistence, not security rules.
 - Global emulator environment is not mutated by tests. The collection disables
@@ -128,9 +131,54 @@ characterized without changing production logic. Deadline races use past/future
 fixtures, not real-time boundary waits. Race waits retain the 90-second SDK
 cancellation limitation documented above.
 
-SignalR, Auth, and hosted worker orchestration are not exercised.
+Auth setup now adds 38 offline configuration/transport safety cases and one
+serialized disposable-account smoke test. The existing 213 cases are preserved.
+Full registration, verification, JWT acceptance, real SMTP, SignalR, and hosted
+worker orchestration are not exercised.
 The emulator does not prove production index requirements or contention behavior.
 
 References:
 - https://docs.cloud.google.com/dotnet/docs/reference/help/emulators
 - https://firebase.google.com/docs/emulator-suite/connect_firestore
+
+## Auth emulator isolation
+
+- `FIREBASE_AUTH_EMULATOR_HOST` is mandatory and must be an explicit loopback IP
+  with a valid port, without `http://`. The configured endpoint is 127.0.0.1:9099.
+- Both emulator hosts and the exact demo project are validated before Admin app
+  initialization; inherited `GOOGLE_APPLICATION_CREDENTIALS` paths are rejected.
+- `AuthEmulatorFixture` creates a unique **named** FirebaseApp with an explicit
+  demo project and synthetic non-refreshable placeholder credential. It never
+  loads ADC or a service-account file. Firebase Admin's Auth emulator mode supplies
+  its local emulator authorization. The placeholder is not a real credential.
+- A test-only HTTP handler revalidates environment before every SDK request and
+  permits only HTTP requests to the selected loopback host and
+  `/identitytoolkit.googleapis.com/v1/projects/demo-ezone-regression/` path.
+  Proxy use and automatic transport redirects are disabled; a redirected request
+  must also pass the guard. A production/wrong-project SDK fallback is rejected
+  before transport. Safety tests use an injected fake terminal handler, no sockets.
+- No test mutates emulator environment variables. The wrapper restores its
+  process-scoped environment in finally, including the Auth host variable.
+- The Auth collection disables parallelization. It refuses to reuse an existing
+  default FirebaseApp and never creates, replaces, or deletes DefaultInstance.
+  Named-app deletion is verified during teardown. Future tests of production
+  services using FirebaseAuth.DefaultInstance need a separately reviewed strategy;
+  this phase deliberately does not initialize a default app.
+- The smoke test creates a unique UID and `example.invalid` email without sending
+  mail or testing sign-in. It creates/reads/deletes through Admin SDK, confirms
+  UserNotFound after deletion, checks recorded request destinations, and retries
+  deletion in finally with its own timeout. Only its own account is deleted.
+- Auth emulator tokens are unsigned. This setup is not a test of production JWT
+  signature validation. Never set emulator environment variables in deployment.
+
+Run Auth safety cases alone without starting either emulator:
+
+```powershell
+dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.csproj --no-build --no-restore --filter Category=AuthSafety
+```
+
+`npm start` starts both configured emulators. `Run-Smoke.ps1` executes the full
+integration suite and automatically stops both. Auth uses the existing pinned CLI;
+no package upgrades, global CLI installation, or Firebase login are required.
+
+Reference: https://firebase.google.com/docs/emulator-suite/connect_auth
