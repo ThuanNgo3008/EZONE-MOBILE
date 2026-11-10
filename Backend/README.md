@@ -32,7 +32,7 @@ Swagger is enabled in Development and Docker environments.
 | --- | --- |
 | `/api/firebase-auth` | register, sync-verification, resend-verification |
 | `/api/firebase-session` | me |
-| `/api/firebase-chat-rooms` | room detail, decision, reports, unmatch, end-chat |
+| `/api/firebase-chat-rooms` | room detail, reports, unmatch, historical end-chat |
 | `/api/firebase-chat-messages` | send and cursor-paginated history |
 | `/api/firebase-random-match` | find, heartbeat, cancel |
 | `/api/firebase-match-reservations` | two-sided ready confirmation |
@@ -50,14 +50,25 @@ Collections remain `users`, `chatRooms`, `matchReservations`, `matchSessions`,
 under `chatRooms/{roomId}/messages`; evidence remains under
 `reports/{reportId}/evidence`. Serialized fields and pair-ID hashing are unchanged.
 
-Reservations have a 30-second ready deadline. Temporary rooms last five minutes,
-followed by a two-minute decision window. Both users continuing makes the chat
-persistent. Moderation and email-verification delivery are retained.
+Reservations have a 30-second ready deadline. Both Ready atomically creates one
+persistent Active anonymous room, records match history, removes owned queue
+entries, and releases the reservation-owned matchSessions. Active chats do not
+block another Random Match: each user can maintain multiple independent rooms.
+There is no chat deadline or continuation decision. Unmatch and Report explicitly
+close only the selected room; persistent messages remain available as history.
+Moderation and email-verification delivery are retained.
 
-FirebaseRoomExpirationWorker retains five stages: temporary-room expiration,
-decision expiration, reservation expiration, stale waiting cleanup, and pending
-message cleanup. Its delay remains ten seconds. Reporting captures evidence;
-cleanup protects persistent messages and unconfirmed evidence.
+FirebaseRoomExpirationWorker now has three stages: reservation expiration, stale
+waiting cleanup, and historical closed-temporary message cleanup. Its delay
+remains ten seconds. Reporting captures evidence; cleanup rejects Active and
+persistent rooms and protects unconfirmed evidence. No automatic room closure or
+Temporary-to-AwaitingDecision transition remains.
+
+Existing Temporary/AwaitingDecision documents are not automatically converted.
+Their fields, explicit end-chat/report handling, and closed-temporary cleanup are
+retained for historical compatibility. The continuation decision endpoint is
+removed; development test-create now creates only persistent Active rooms.
+See [lifecycle refactor review and migration plan](CHAT_LIFECYCLE_REFACTOR.md).
 
 ## Scope
 

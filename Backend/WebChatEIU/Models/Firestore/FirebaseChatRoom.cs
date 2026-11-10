@@ -32,14 +32,14 @@ namespace WebChatEIU.Models.Firestore
         [FirestoreProperty]
         public string? Purpose { get; set; }
 
-        // Temporary Chat
+        // Historical room fields retained for existing documents; new rooms have no timers.
         [FirestoreProperty]
         public Timestamp? TemporaryStartedAt { get; set; }
 
         [FirestoreProperty]
         public Timestamp? TemporaryEndsAt { get; set; }
 
-        // Continuation Decision
+        // Historical continuation deadline (not scheduled or written by the new flow).
         [FirestoreProperty]
         public Timestamp? DecisionEndsAt { get; set; }
 

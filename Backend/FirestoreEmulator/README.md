@@ -98,7 +98,7 @@ dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.cspr
 ```
 
 The integration project now includes 22 safety cases, one disposable smoke test,
-41 Random Match/reservation cases, and 38 lifecycle/reporting/cleanup cases.
+47 Random Match/reservation cases, and 39 lifecycle/reporting/cleanup cases.
 Run-Smoke.ps1 runs the complete integration project, including these cases. They instantiate the production queue and
 reservation services directly with the guarded emulator database; no API is started.
 
@@ -116,18 +116,20 @@ in-flight SDK operation; stop the disposable emulator if a run times out, and do
 not continue using that test process. No delays simulate the 30/60-second rules;
 fixtures seed past timestamps instead. Unrelated cases remain serialized.
 
-Lifecycle coverage uses real matched pairs, controlled room deadlines, duplicate
-and simultaneous decisions, decision-versus-expiration transactions, unmatch with
-read-only message history, evidence snapshots, multi-batch cleanup (401 messages),
-and interrupted-cleanup retry fixtures. Nested messages, decisions, reports, and
+Lifecycle coverage uses real matched pairs creating immediate Active anonymous
+rooms, released reservation sessions, immediate rematching into multiple rooms,
+Ready retries and Ready-versus-expiration transactions, unmatch with read-only
+message history, and report isolation. Historical cleanup uses explicitly seeded
+legacy rooms, evidence snapshots, multiple batches (401 messages), and interrupted
+cleanup retry fixtures. Nested messages, historical decisions, reports, and
 evidence are deleted only for each test's owned rooms before the existing matching
 fixture removes its users/sessions/rooms/history. No global emulator reset is used.
 
-Terminal decision retries are rejected by the existing implementation; only waiting
-duplicates are accepted. The cleanup service leaves CleanupPending set; clearing it
-belongs to the untested worker. Empty User reports may have EvidenceCaptured=false;
-cleanup permits these only when no messages remain. These existing behaviors are
-characterized without changing production logic. Deadline races use past/future
+Continuation decisions and automatic chat timers are removed. Active rooms have
+no mandatory expiration, and stale deadline fields cannot enable temporary cleanup.
+The cleanup service leaves CleanupPending set; clearing it belongs to the untested
+worker. Empty User reports may have EvidenceCaptured=false; historical temporary
+cleanup permits these only when no messages remain. Reservation deadline races use past/future
 fixtures, not real-time boundary waits. Race waits retain the 90-second SDK
 cancellation limitation documented above.
 
@@ -186,8 +188,9 @@ Reference: https://firebase.google.com/docs/emulator-suite/connect_auth
 ## Registration, verification, and session workflows
 
 `AuthWorkflows` uses the real Auth/User services and guarded emulator clients.
-It adds 38 workflow cases and 10 offline link-safety cases. The complete regression
-run contains 189 integration-project cases plus 111 existing offline unit cases.
+It adds 38 workflow cases and 10 offline link-safety cases. After the persistent-chat
+refactor the complete run contains 196 integration-project cases and 111 offline
+unit cases (the obsolete decision route contract is replaced by an absence check).
 Its nonparallel collection refuses any existing default FirebaseApp, creates an
 owned default app with the explicit demo project and synthetic non-refreshable
 credential, verifies ownership before use, and deletes that exact app at teardown.

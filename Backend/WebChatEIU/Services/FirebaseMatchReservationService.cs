@@ -114,11 +114,11 @@ namespace WebChatEIU.Services
                         : null;
 
                     bool user1Busy = session1 != null &&
-                        (session1.Status != "PendingReady" ||
+                        (session1.Status == "PendingReady" &&
                          session1.ExpiresAt.ToDateTime() > now);
 
                     bool user2Busy = session2 != null &&
-                        (session2.Status != "PendingReady" ||
+                        (session2.Status == "PendingReady" &&
                          session2.ExpiresAt.ToDateTime() > now);
 
                     if (user1Busy || user2Busy)
@@ -415,7 +415,7 @@ namespace WebChatEIU.Services
                     return ("Waiting", null);
                 }
 
-                // Cả hai Ready: tạo phòng Temporary.
+                // Create persistent anonymous chat and release reservation locks atomically.
                 var room = new FirebaseChatRoom
                 {
                     RoomId = newRoomReference.Id,
@@ -423,12 +423,11 @@ namespace WebChatEIU.Services
                     User2Id = reservation.User2Id,
                     User1Nickname = "Anonymous Fox",
                     User2Nickname = "Anonymous Panda",
-                    Status = "Temporary",
+                    Status = "Active",
                     MatchMode = reservation.MatchMode,
                     Purpose = reservation.Purpose,
                     AffinityScore = 0,
-                    TemporaryStartedAt = timestamp,
-                    TemporaryEndsAt = Timestamp.FromDateTime(now.AddMinutes(5)),
+                    BecamePersistentAt = timestamp,
                     CreatedAt = timestamp,
                     UpdatedAt = timestamp
                 };
@@ -467,19 +466,9 @@ namespace WebChatEIU.Services
                 });
 
 
-                var sessionExpiresAt = Timestamp.FromDateTime(
-                    now.AddMinutes(7));
-
-                var sessionUpdate = new Dictionary<string, object>
-                {
-                    ["Status"] = "Temporary",
-                    ["RoomId"] = newRoomReference.Id,
-                    ["ExpiresAt"] = sessionExpiresAt,
-                    ["UpdatedAt"] = timestamp
-                };
-
-                transaction.Update(session1Reference, sessionUpdate);
-                transaction.Update(session2Reference, sessionUpdate);
+                // Ownership of both PendingReady sessions was verified above.
+                transaction.Delete(session1Reference);
+                transaction.Delete(session2Reference);
 
 
                 if (reservation.MatchMode == "Random")

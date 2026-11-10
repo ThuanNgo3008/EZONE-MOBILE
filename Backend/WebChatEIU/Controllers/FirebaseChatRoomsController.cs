@@ -13,7 +13,6 @@ namespace WebChatEIU.Controllers
     {
         private readonly FirebaseChatRoomService _chatRoomService;
         private readonly FirebaseUserService _userService;
-        private readonly FirebaseRoomDecisionService _roomDecisionService;
         private readonly FirebaseReportService _reportService;
         private readonly FirebaseTemporaryMessageCleanupService _cleanupService;
         private readonly IWebHostEnvironment _environment;
@@ -21,14 +20,12 @@ namespace WebChatEIU.Controllers
         public FirebaseChatRoomsController(
             FirebaseChatRoomService chatRoomService,
             FirebaseUserService userService,
-            FirebaseRoomDecisionService roomDecisionService,
             FirebaseReportService reportService,
             FirebaseTemporaryMessageCleanupService cleanupService,
             IWebHostEnvironment environment)
         {
             _chatRoomService = chatRoomService;
             _userService = userService;
-            _roomDecisionService = roomDecisionService;
             _reportService = reportService;
             _cleanupService = cleanupService;
             _environment = environment;
@@ -70,15 +67,7 @@ namespace WebChatEIU.Controllers
             }
 
 
-            var room = request.IsTemporary
-                ? await _chatRoomService.CreateTemporaryRoomAsync(
-                    currentUserId,
-                    request.PartnerUserId,
-                    "Anonymous Fox",
-                    "Anonymous Panda",
-                    "Random"
-                )
-                : await _chatRoomService.CreateRoomAsync(
+            var room = await _chatRoomService.CreateRoomAsync(
                     currentUserId,
                     request.PartnerUserId,
                     "Anonymous Fox",
@@ -156,64 +145,6 @@ namespace WebChatEIU.Controllers
                 room.DecisionEndsAt
             });
         }
-
-        [HttpPost("{roomId}/decision")]
-        public async Task<IActionResult> SubmitDecision(string roomId, [FromBody] SubmitRoomDecisionDto dto)
-        {
-            var userId = User.FindFirst("user_id")?.Value;
-
-            if (string.IsNullOrWhiteSpace(userId))
-            {
-                return Unauthorized();
-            }
-
-            var user = await _userService.GetByIdAsync(userId);
-
-            if (user == null ||
-                !user.IsActive ||
-                user.IsBanned ||
-                user.IsDeleted)
-            {
-                return Forbid();
-            }
-
-            try
-            {
-                var status = await _roomDecisionService
-                    .SubmitDecisionAsync(
-                        roomId,
-                        userId,
-                        dto.ContinueChat!.Value
-                    );
-
-                return Ok(new
-                {
-                    status
-                });
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return Forbid();
-            }
-            catch (ArgumentException)
-            {
-                return BadRequest(new
-                {
-                    message = "Invalid room ID."
-                });
-            }
-            catch (InvalidOperationException ex)
-            {
-                System.Diagnostics.Debug.WriteLine(
-                    $"[FirebaseReport Error] {ex}");
-
-                return Conflict(new
-                {
-                    message = "Room or reported message is unavailable."
-                });
-            }
-        }
-
 
         [HttpPost("{roomId}/reports")]
         public async Task<IActionResult> CreateReport(
@@ -453,7 +384,6 @@ namespace WebChatEIU.Controllers
     {
         public string PartnerUserId { get; set; } = string.Empty;
 
-        public bool IsTemporary { get; set; } = false;
     }
 
 }

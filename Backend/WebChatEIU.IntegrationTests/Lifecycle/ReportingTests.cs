@@ -38,8 +38,7 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
         var messages = await data.SeedMessagesAsync(pair, 13);
-        if (state == "AwaitingDecision") await data.AwaitDecisionAsync(pair);
-        if (state == "Active") await data.MakePersistentAsync(pair);
+        if (state != "Active") await data.SeedHistoricalRoomAsync(pair, state);
         var id = await data.Reports.CreateReportAsync(pair.RoomId, pair.User1, "User", "Abuse");
         var report = await data.Matches.ReadAsync<FirebaseReport>("reports", id);
         Assert.Equal("User", report.ReportType);
@@ -61,8 +60,8 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             data.Reports.CreateReportAsync(pair.RoomId, pair.User1, "Message", "Abuse", reportedMessageId: foreign.MessageId));
         Assert.Equal("Reported message not found.", error.Message);
-        Assert.Equal("Temporary", (await data.ReadRoomAsync(pair)).Status);
-        Assert.Equal("Temporary", (await data.ReadRoomAsync(other)).Status);
+        Assert.Equal("Active", (await data.ReadRoomAsync(pair)).Status);
+        Assert.Equal("Active", (await data.ReadRoomAsync(other)).Status);
         Assert.Empty((await fixture.Database.Collection("reports").WhereEqualTo("RoomId", pair.RoomId).GetSnapshotAsync()).Documents);
         Assert.True((await data.Room(other.RoomId).Collection("messages").Document(foreign.MessageId).GetSnapshotAsync()).Exists);
     }
@@ -75,7 +74,7 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         var own = await data.Messages.SendMessageAsync(pair.RoomId, pair.User1, "Own message");
         await Assert.ThrowsAsync<ArgumentException>(() => data.Reports.CreateReportAsync(pair.RoomId, pair.User1,
             "Message", "Abuse", reportedMessageId: own.MessageId));
-        Assert.Equal("Temporary", (await data.ReadRoomAsync(pair)).Status);
+        Assert.Equal("Active", (await data.ReadRoomAsync(pair)).Status);
         Assert.Empty((await fixture.Database.Collection("reports").WhereEqualTo("RoomId", pair.RoomId).GetSnapshotAsync()).Documents);
     }
 
@@ -87,7 +86,7 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         var outsider = await data.Matches.NewUserAsync();
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
             data.Reports.CreateReportAsync(pair.RoomId, outsider, "User", "Abuse"));
-        Assert.Equal("Temporary", (await data.ReadRoomAsync(pair)).Status);
+        Assert.Equal("Active", (await data.ReadRoomAsync(pair)).Status);
         Assert.Empty((await fixture.Database.Collection("reports").WhereEqualTo("RoomId", pair.RoomId).GetSnapshotAsync()).Documents);
     }
 
@@ -97,7 +96,7 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
         await Assert.ThrowsAsync<ArgumentException>(() => data.Reports.CreateReportAsync(pair.RoomId, pair.User1, "Message", "Abuse"));
-        Assert.Equal("Temporary", (await data.ReadRoomAsync(pair)).Status);
+        Assert.Equal("Active", (await data.ReadRoomAsync(pair)).Status);
     }
 
     [Fact]
@@ -109,7 +108,33 @@ public sealed class ReportingTests(FirestoreEmulatorFixture fixture)
         Assert.False((await data.Matches.ReadAsync<FirebaseReport>("reports", id)).EvidenceCaptured);
         Assert.Empty((await data.Report(id).Collection("evidence").GetSnapshotAsync()).Documents);
         await data.AssertClosedAsync(pair);
-        // Existing cleanup permits empty rooms even when no evidence was available.
-        Assert.Equal(0, await data.Cleanup.DeleteTemporaryMessagesAsync(pair.RoomId));
+        // Even an empty persistent room is not eligible for temporary cleanup.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => data.Cleanup.DeleteTemporaryMessagesAsync(pair.RoomId));
+    }
+
+    [Fact]
+    public async Task Report_ClosesOnlyTargetRoom_PreservesOtherRoomAndNewReservation()
+    {
+        await using var data = new LifecycleTestData(fixture.Database);
+        var ab = await data.MatchedPairAsync();
+        var ac = await data.MatchAgainAsync(ab.User1);
+        var evidence = await data.SeedMessagesAsync(ab, 3);
+        var otherMessage = await data.Messages.SendMessageAsync(ac.RoomId, ac.User2, "Unaffected");
+        var partner = await data.Matches.WaitingUserAsync();
+        await data.Matches.Queue.JoinQueueAsync(ab.User1);
+        var next = await data.Matches.Queue.TryReserveCandidateAsync(ab.User1, partner);
+        Assert.NotNull(next);
+        var reportId = await data.Reports.CreateReportAsync(ab.RoomId, ab.User1, "User", "Abuse");
+        var closed = await data.ReadRoomAsync(ab);
+        Assert.Equal("Closed", closed.Status);
+        Assert.False(closed.CleanupPending);
+        await data.AssertEvidenceAsync(reportId, evidence);
+        await data.Matches.AssertPendingSessionAsync(ab.User1, next);
+        await data.Matches.AssertPendingSessionAsync(partner, next);
+        Assert.Equal("Active", (await data.ReadRoomAsync(ac)).Status);
+        Assert.Equal(otherMessage.MessageId, Assert.Single((await data.Messages.GetMessagesAsync(ac.RoomId, ac.User1)).Messages).MessageId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => data.Cleanup.DeleteTemporaryMessagesAsync(ab.RoomId));
+        Assert.Equal(3, (await data.Room(ab.RoomId).Collection("messages").GetSnapshotAsync()).Count);
+        await data.Messages.SendMessageAsync(ac.RoomId, ac.User1, "Still active");
     }
 }

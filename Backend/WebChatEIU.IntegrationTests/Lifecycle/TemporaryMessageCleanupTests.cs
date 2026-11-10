@@ -10,11 +10,12 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
         await data.SeedMessagesAsync(pair, 401);
+        await data.SeedHistoricalRoomAsync(pair);
         await data.Rooms.EndTemporaryRoomAsync(pair.RoomId, pair.User1);
         Assert.Equal(401, await data.Cleanup.DeleteTemporaryMessagesAsync(pair.RoomId));
         Assert.Empty((await data.Room(pair.RoomId).Collection("messages").GetSnapshotAsync()).Documents);
         Assert.Equal(0, await data.Cleanup.DeleteTemporaryMessagesAsync(pair.RoomId));
-        await data.AssertClosedAsync(pair);
+        await data.AssertClosedAsync(pair, cleanupPending: true);
         // The worker, not this service, clears CleanupPending after successful cleanup.
         Assert.True((await data.ReadRoomAsync(pair)).CleanupPending);
     }
@@ -30,8 +31,7 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
         var messages = await data.SeedMessagesAsync(pair, 1);
-        if (state == "AwaitingDecision") await data.AwaitDecisionAsync(pair);
-        if (state is "Active" or "ClosedPersistent") await data.MakePersistentAsync(pair);
+        if (state is "Temporary" or "AwaitingDecision") await data.SeedHistoricalRoomAsync(pair, state);
         if (state == "ClosedPersistent")
         {
             await data.Rooms.UnmatchRoomAsync(pair.RoomId, pair.User1);
@@ -40,6 +40,7 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
         }
         if (state == "ClosedNotPending")
         {
+            await data.SeedHistoricalRoomAsync(pair);
             await data.Rooms.EndTemporaryRoomAsync(pair.RoomId, pair.User1);
             await data.Room(pair.RoomId).UpdateAsync("CleanupPending", false);
         }
@@ -54,6 +55,7 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
     {
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
+        await data.SeedHistoricalRoomAsync(pair);
         var messages = await data.SeedMessagesAsync(pair, 13);
         var reportId = await data.Reports.CreateReportAsync(pair.RoomId, pair.User1, "Message", "Abuse", reportedMessageId: messages[6].MessageId);
         Assert.Equal(13, await data.Cleanup.DeleteTemporaryMessagesAsync(pair.RoomId));
@@ -68,6 +70,7 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
     {
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
+        await data.SeedHistoricalRoomAsync(pair);
         var messages = await data.SeedMessagesAsync(pair, 3);
         var reportId = await data.Reports.CreateReportAsync(pair.RoomId, pair.User1, "User", "Abuse");
         // Controlled fixture represents an outstanding evidence confirmation.
@@ -89,6 +92,7 @@ public sealed class TemporaryMessageCleanupTests(FirestoreEmulatorFixture fixtur
         await using var data = new LifecycleTestData(fixture.Database);
         var pair = await data.MatchedPairAsync();
         var messages = await data.SeedMessagesAsync(pair, 401);
+        await data.SeedHistoricalRoomAsync(pair);
         await data.Rooms.EndTemporaryRoomAsync(pair.RoomId, pair.User1);
         // Simulate an interrupted earlier cleanup after its first 200-message batch.
         var batch = fixture.Database.StartBatch();

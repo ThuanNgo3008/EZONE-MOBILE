@@ -11,6 +11,14 @@ namespace WebChatEIU.Tests.Contracts;
 // Metadata checks only: no controller, hub, host, or Firebase client is constructed.
 public class FirebaseEndpointContractTests
 {
+    [Fact]
+    public void ContinuationDecisionEndpoint_IsNoLongerExposed()
+    {
+        var actions = typeof(FirebaseChatRoomsController).GetMethods();
+        Assert.DoesNotContain(actions.SelectMany(action => action.GetCustomAttributes<HttpMethodAttribute>()),
+            attribute => attribute.Template == "{roomId}/decision");
+    }
+
     public static TheoryData<Type, string, string, string, bool> Endpoints => new()
     {
         { typeof(FirebaseAuthController), nameof(FirebaseAuthController.Register), "POST", "api/firebase-auth/register", false },
@@ -22,7 +30,6 @@ public class FirebaseEndpointContractTests
         { typeof(FirebaseChatMessagesController), nameof(FirebaseChatMessagesController.GetMessages), "GET", "api/firebase-chat-messages/{roomId}", true },
         { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.TestCreateRoom), "POST", "api/firebase-chat-rooms/test-create", true },
         { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.GetRoomById), "GET", "api/firebase-chat-rooms/{roomId}", true },
-        { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.SubmitDecision), "POST", "api/firebase-chat-rooms/{roomId}/decision", true },
         { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.CreateReport), "POST", "api/firebase-chat-rooms/{roomId}/reports", true },
         { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.UnmatchRoom), "POST", "api/firebase-chat-rooms/{roomId}/unmatch", true },
         { typeof(FirebaseChatRoomsController), nameof(FirebaseChatRoomsController.EndTemporaryChat), "POST", "api/firebase-chat-rooms/{roomId}/end-chat", true },

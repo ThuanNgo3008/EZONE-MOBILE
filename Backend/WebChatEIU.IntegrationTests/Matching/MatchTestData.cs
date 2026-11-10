@@ -78,10 +78,15 @@ internal sealed class MatchTestData(FirestoreDb database) : IAsyncDisposable
         Assert.True(reservation.User1Ready && reservation.User2Ready);
         Assert.Equal(roomId, reservation.RoomId);
         var room = await ReadAsync<FirebaseChatRoom>("chatRooms", roomId);
-        Assert.Equal("Temporary", room.Status);
+        Assert.Equal("Active", room.Status);
         Assert.Equal(first, room.User1Id);
         Assert.Equal(second, room.User2Id);
-        Assert.Equal(TimeSpan.FromMinutes(5), room.TemporaryEndsAt!.Value.ToDateTime() - room.TemporaryStartedAt!.Value.ToDateTime());
+        Assert.NotNull(room.BecamePersistentAt);
+        Assert.Null(room.TemporaryStartedAt);
+        Assert.Null(room.TemporaryEndsAt);
+        Assert.Null(room.DecisionEndsAt);
+        Assert.False(room.IsRevealed);
+        Assert.False(room.CleanupPending);
         Assert.Single(await OwnedAsync("chatRooms"));
         var history = Assert.Single(await OwnedAsync("matchHistory")).ConvertTo<FirebaseMatchHistory>();
         Assert.Equal(roomId, history.RoomId);
@@ -89,11 +94,7 @@ internal sealed class MatchTestData(FirestoreDb database) : IAsyncDisposable
             new[] { history.User1Id, history.User2Id });
         foreach (var user in new[] { first, second })
         {
-            var session = await ReadAsync<FirebaseMatchSession>("matchSessions", user);
-            Assert.Equal(reservationId, session.ReservationId);
-            Assert.Equal("Temporary", session.Status);
-            Assert.Equal(roomId, session.RoomId);
-            Assert.Equal(room.TemporaryStartedAt.Value.ToDateTime().AddMinutes(7), session.ExpiresAt.ToDateTime());
+            await AssertMissingAsync("matchSessions", user);
             await AssertMissingAsync("randomMatchQueue", user);
         }
     }

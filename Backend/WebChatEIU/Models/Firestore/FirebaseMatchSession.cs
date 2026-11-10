@@ -5,6 +5,8 @@ namespace WebChatEIU.Models.Firestore
     [FirestoreData]
     public class FirebaseMatchSession
     {
+        // Reservation lock only. Successful mutual Ready deletes both owned sessions.
+        // RoomId remains readable for historical sessions; Active chats do not hold locks.
         [FirestoreDocumentId]
         public string UserId { get; set; } = string.Empty;
 

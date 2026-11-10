@@ -190,6 +190,66 @@ public sealed class MatchReservationTests(FirestoreEmulatorFixture fixture)
         await data.AssertPendingSessionAsync(second, id);
     }
 
+    [Fact]
+    public async Task CancellingOldReservation_DoesNotDeleteReplacementSession()
+    {
+        await using var data = new MatchTestData(fixture.Database);
+        var (first, second, id) = await data.ReservedPairAsync();
+        var replacement = "replacement-" + Guid.NewGuid().ToString("N");
+        await data.Document("matchSessions", first).UpdateAsync("ReservationId", replacement);
+        Assert.Equal("Cancelled", await data.Queue.CancelWaitingAsync(second));
+        Assert.Equal(replacement, (await data.ReadAsync<FirebaseMatchSession>("matchSessions", first)).ReservationId);
+        await data.AssertMissingAsync("matchSessions", second);
+        Assert.Equal("Cancelled", (await data.ReadAsync<FirebaseMatchReservation>("matchReservations", id)).Status);
+        Assert.Empty(await data.OwnedAsync("chatRooms"));
+    }
+
+    [Fact]
+    public async Task ReadyWithoutBothOwnedSessions_CannotCreateRoomOrDeleteReplacement()
+    {
+        await using var data = new MatchTestData(fixture.Database);
+        var (first, second, id) = await data.ReservedPairAsync();
+        await data.Reservations.SubmitReadyAsync(id, first);
+        var replacement = "replacement-" + Guid.NewGuid().ToString("N");
+        await data.Document("matchSessions", first).UpdateAsync("ReservationId", replacement);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => data.Reservations.SubmitReadyAsync(id, second));
+        Assert.Equal("Reservation no longer owns both match sessions.", error.Message);
+        Assert.Equal(replacement, (await data.ReadAsync<FirebaseMatchSession>("matchSessions", first)).ReservationId);
+        await data.AssertPendingSessionAsync(second, id);
+        Assert.Empty(await data.OwnedAsync("chatRooms"));
+        Assert.Empty(await data.OwnedAsync("matchHistory"));
+    }
+
+    [Theory]
+    [InlineData("Active", false)]
+    [InlineData("Active", true)]
+    [InlineData("Temporary", false)]
+    [InlineData("Temporary", true)]
+    public async Task HistoricalRoomSessions_DoNotBlockNewReservations(string status, bool directCreation)
+    {
+        await using var data = new MatchTestData(fixture.Database);
+        var first = await data.NewUserAsync();
+        var second = await data.NewUserAsync();
+        await data.Document("matchSessions", first).CreateAsync(new FirebaseMatchSession
+        {
+            UserId = first, Status = status, ReservationId = "historical-reservation",
+            RoomId = "historical-room", ExpiresAt = Timestamp.FromDateTime(DateTime.UtcNow.AddHours(1))
+        });
+        Assert.Equal("Waiting", await data.Queue.JoinQueueAsync(first));
+        await data.Queue.JoinQueueAsync(second);
+        var id = directCreation
+            ? await data.Reservations.CreateReservationAsync(first, second, "Random")
+            : await data.Queue.TryReserveCandidateAsync(first, second);
+        Assert.NotNull(id);
+        foreach (var user in new[] { first, second })
+        {
+            var session = await data.ReadAsync<FirebaseMatchSession>("matchSessions", user);
+            Assert.Equal("PendingReady", session.Status);
+            Assert.Equal(id, session.ReservationId);
+            Assert.Null(session.RoomId);
+        }
+    }
+
     private static async Task AssertRequeueAsync(MatchTestData data, string user, bool ready)
     {
         if (!ready) { await data.AssertMissingAsync("randomMatchQueue", user); return; }

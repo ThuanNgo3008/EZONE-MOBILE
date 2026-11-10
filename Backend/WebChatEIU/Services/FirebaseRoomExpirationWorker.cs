@@ -27,18 +27,6 @@ namespace WebChatEIU.Services
                 {
                     var now = Timestamp.FromDateTime(DateTime.UtcNow);
 
-                    await ProcessExpiredRoomsAsync(
-                        "Temporary",
-                        "TemporaryEndsAt",
-                        now,
-                        stoppingToken);
-
-                    await ProcessExpiredRoomsAsync(
-                        "AwaitingDecision",
-                        "DecisionEndsAt",
-                        now,
-                        stoppingToken);
-
                     await ProcessExpiredReservationsAsync(now, stoppingToken);
 
                     await ProcessStaleWaitingAsync(stoppingToken);
@@ -121,50 +109,6 @@ namespace WebChatEIU.Services
                     _logger.LogError(
                         ex,
                         "Failed to clean up room {RoomId}.",
-                        document.Id);
-                }
-            }
-        }
-
-
-        private async Task ProcessExpiredRoomsAsync(
-            string status,
-            string deadlineField,
-            Timestamp now,
-            CancellationToken cancellationToken)
-        {
-            var snapshot = await _firestoreDb
-                .Collection("chatRooms")
-                .WhereEqualTo("Status", status)
-                .WhereLessThanOrEqualTo(deadlineField, now)
-                .Limit(100)
-                .GetSnapshotAsync(cancellationToken);
-
-            using var scope = _scopeFactory.CreateScope();
-
-            var roomService = scope.ServiceProvider
-                .GetRequiredService<FirebaseChatRoomService>();
-
-            foreach (var document in snapshot.Documents)
-            {
-                try
-                {
-                    if (status == "Temporary")
-                    {
-                        await roomService
-                            .TryMoveToAwaitingDecisionAsync(document.Id);
-                    }
-                    else
-                    {
-                        await roomService
-                            .TryCloseExpiredDecisionAsync(document.Id);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(
-                        ex,
-                        "Failed to update room {RoomId}.",
                         document.Id);
                 }
             }

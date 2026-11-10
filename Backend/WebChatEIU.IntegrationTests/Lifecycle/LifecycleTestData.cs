@@ -12,7 +12,6 @@ internal sealed class LifecycleTestData(FirestoreDb database) : IAsyncDisposable
     private readonly HashSet<string> rooms = new();
     public MatchTestData Matches { get; } = new(database);
     public FirebaseChatRoomService Rooms { get; } = new(database);
-    public FirebaseRoomDecisionService Decisions { get; } = new(database);
     public FirebaseChatMessageService Messages { get; } = new(database);
     public FirebaseReportService Reports { get; } = new(database);
     public FirebaseTemporaryMessageCleanupService Cleanup { get; } = new(database);
@@ -30,24 +29,32 @@ internal sealed class LifecycleTestData(FirestoreDb database) : IAsyncDisposable
         return new ChatPair(first, second, reservation, result.RoomId);
     }
 
-    public async Task AwaitDecisionAsync(ChatPair pair)
+    public async Task<ChatPair> MatchAgainAsync(string user)
     {
-        // Whole seconds preserve exact comparisons after Firestore serialization.
-        var now = DateTime.UtcNow;
-        var end = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc).AddSeconds(-30);
-        await Room(pair.RoomId).UpdateAsync(new Dictionary<string, object>
-        {
-            ["TemporaryStartedAt"] = Timestamp.FromDateTime(end.AddMinutes(-5)),
-            ["TemporaryEndsAt"] = Timestamp.FromDateTime(end)
-        });
-        Assert.True(await Rooms.TryMoveToAwaitingDecisionAsync(pair.RoomId));
+        var partner = await Matches.WaitingUserAsync();
+        var result = await Matches.Queue.FindMatchAsync(user);
+        Assert.Equal("Reserved", result.Status);
+        Assert.NotNull(result.ReservationId);
+        await Matches.Reservations.SubmitReadyAsync(result.ReservationId, user);
+        var ready = await Matches.Reservations.SubmitReadyAsync(result.ReservationId, partner);
+        Assert.Equal("Matched", ready.Status);
+        Assert.NotNull(ready.RoomId);
+        rooms.Add(ready.RoomId);
+        return new ChatPair(user, partner, result.ReservationId, ready.RoomId);
     }
 
-    public async Task MakePersistentAsync(ChatPair pair)
+    // Seed historical documents explicitly; the application no longer creates these states.
+    public async Task SeedHistoricalRoomAsync(ChatPair pair, string state = "Temporary")
     {
-        await AwaitDecisionAsync(pair);
-        Assert.Equal("Waiting", await Decisions.SubmitDecisionAsync(pair.RoomId, pair.User1, true));
-        Assert.Equal("Active", await Decisions.SubmitDecisionAsync(pair.RoomId, pair.User2, true));
+        var end = Timestamp.FromDateTime(DateTime.UtcNow.AddMinutes(-10));
+        await Room(pair.RoomId).UpdateAsync(new Dictionary<string, object>
+        {
+            ["Status"] = state,
+            ["BecamePersistentAt"] = null!,
+            ["TemporaryStartedAt"] = Timestamp.FromDateTime(end.ToDateTime().AddMinutes(-5)),
+            ["TemporaryEndsAt"] = end,
+            ["DecisionEndsAt"] = Timestamp.FromDateTime(end.ToDateTime().AddMinutes(2))
+        });
     }
 
     public Task<FirebaseChatRoom> ReadRoomAsync(ChatPair pair) =>
@@ -59,7 +66,7 @@ internal sealed class LifecycleTestData(FirestoreDb database) : IAsyncDisposable
         await Matches.AssertMissingAsync("matchSessions", pair.User2);
     }
 
-    public async Task AssertClosedAsync(ChatPair pair, bool cleanupPending = true)
+    public async Task AssertClosedAsync(ChatPair pair, bool cleanupPending = false)
     {
         var room = await ReadRoomAsync(pair);
         Assert.Equal("Closed", room.Status);

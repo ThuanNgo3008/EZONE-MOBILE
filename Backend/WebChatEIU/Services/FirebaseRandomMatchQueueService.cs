@@ -72,9 +72,8 @@ namespace WebChatEIU.Services
                         : null;
 
                     bool isBusy = session != null &&
-                        (session.Status == "Temporary" ||
-                         (session.Status == "PendingReady" &&
-                          session.ExpiresAt.ToDateTime() > now));
+                        session.Status == "PendingReady" &&
+                        session.ExpiresAt.ToDateTime() > now;
 
                     if (isBusy)
                     {
@@ -288,11 +287,11 @@ namespace WebChatEIU.Services
                         : null;
 
                     bool user1Busy = session1 != null &&
-                        (session1.Status != "PendingReady" ||
+                        (session1.Status == "PendingReady" &&
                          session1.ExpiresAt.ToDateTime() > now);
 
                     bool user2Busy = session2 != null &&
-                        (session2.Status != "PendingReady" ||
+                        (session2.Status == "PendingReady" &&
                          session2.ExpiresAt.ToDateTime() > now);
 
                     if (user1Busy || user2Busy)

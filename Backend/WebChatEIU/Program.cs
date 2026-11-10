@@ -42,7 +42,6 @@ namespace WebChatEIU
             builder.Services.AddScoped<FirebaseUserService>();
             builder.Services.AddScoped<FirebaseChatRoomService>();
             builder.Services.AddScoped<FirebaseChatMessageService>();
-            builder.Services.AddScoped<FirebaseRoomDecisionService>();
             builder.Services.AddScoped<FirebaseMatchHistoryService>();
             builder.Services.AddScoped<FirebaseTemporaryMessageCleanupService>();
             builder.Services.AddScoped<FirebaseReportService>();
