@@ -133,8 +133,9 @@ cancellation limitation documented above.
 
 Auth setup now adds 38 offline configuration/transport safety cases and one
 serialized disposable-account smoke test. The existing 213 cases are preserved.
-Full registration, verification, JWT acceptance, real SMTP, SignalR, and hosted
-worker orchestration are not exercised.
+Registration, verification, resend, and service/action-level eligibility coverage
+is described below. JWT acceptance, real SMTP, SignalR, and hosted worker
+orchestration are not exercised.
 The emulator does not prove production index requirements or contention behavior.
 
 References:
@@ -161,9 +162,8 @@ References:
   process-scoped environment in finally, including the Auth host variable.
 - The Auth collection disables parallelization. It refuses to reuse an existing
   default FirebaseApp and never creates, replaces, or deletes DefaultInstance.
-  Named-app deletion is verified during teardown. Future tests of production
-  services using FirebaseAuth.DefaultInstance need a separately reviewed strategy;
-  this phase deliberately does not initialize a default app.
+  Named-app deletion is verified during teardown. The separate workflow fixture
+  described below owns a default app for services that require DefaultInstance.
 - The smoke test creates a unique UID and `example.invalid` email without sending
   mail or testing sign-in. It creates/reads/deletes through Admin SDK, confirms
   UserNotFound after deletion, checks recorded request destinations, and retries
@@ -182,3 +182,45 @@ integration suite and automatically stops both. Auth uses the existing pinned CL
 no package upgrades, global CLI installation, or Firebase login are required.
 
 Reference: https://firebase.google.com/docs/emulator-suite/connect_auth
+
+## Registration, verification, and session workflows
+
+`AuthWorkflows` uses the real Auth/User services and guarded emulator clients.
+It adds 38 workflow cases and 10 offline link-safety cases. The complete regression
+run contains 189 integration-project cases plus 111 existing offline unit cases.
+Its nonparallel collection refuses any existing default FirebaseApp, creates an
+owned default app with the explicit demo project and synthetic non-refreshable
+credential, verifies ownership before use, and deletes that exact app at teardown.
+It cannot overlap the existing nonparallel named-app Auth collection.
+
+The email service is an in-memory recorder with optional simulated delivery
+failure; SMTP is never instantiated. Captured verification links are validated
+before a single HTTP GET: only the configured loopback Auth host, `/emulator/action`,
+verifyEmail mode, fake emulator API key, and a nonempty code are accepted.
+Redirects, proxies, continuation URLs, and tenant parameters are disallowed.
+Offline negative-link tests exercise this boundary without opening sockets.
+
+Registration rollback uses a test-only HTTP response observer: after the real
+emulator creates an account, the fixture seeds a conflicting profile before the
+service attempts profile creation. The real Firestore AlreadyExists error then
+exercises account rollback. SDK responses and transactions are not mocked.
+Every created UID is tracked even when registration throws; cleanup removes only
+owned Auth accounts, user profiles, and queue entries. No global reset is used.
+
+Workflow tests characterize duplicate/invalid registration, profile preservation,
+delivery failure and recovery, emulator email verification, repeated activation,
+resend behavior, and eligibility for missing, disabled, unverified, inactive,
+banned, and deleted accounts. Controller actions receive an explicitly constructed
+principal; these assertions do not test JWT validation, authorization middleware,
+HTTP status translation for unhandled errors, or middleware rate limits.
+
+Current behavior is preserved: school-email validation belongs to DTO validation,
+not the registration service; resend delivery exceptions propagate from the action.
+Unresolved issue — Random Match eligibility: an active Firestore profile with
+unverified or disabled Auth is rejected by the
+session action and verification synchronization, but accepted by queue Join's
+profile-only checks. Dedicated characterization tests record this eligibility
+inconsistency without changing production behavior or claiming an HTTP exploit.
+
+Run-Smoke.ps1 includes these tests automatically. No additional downloads or
+dependency changes are required beyond the existing emulator setup.
