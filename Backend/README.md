@@ -58,6 +58,12 @@ There is no chat deadline or continuation decision. Unmatch and Report explicitl
 close only the selected room; persistent messages remain available as history.
 Moderation and email-verification delivery are retained.
 
+Random Match requires both an existing, enabled Firebase Auth account with verified
+email and an active/non-banned/non-deleted Firestore profile. Both users are checked
+before reservation and again before new Ready/match writes. Auth lookups run outside
+Firestore transactions; profiles and ownership remain checked inside them. See
+[eligibility review and remaining race](PHASE_2D_1_MATCH_ELIGIBILITY.md).
+
 FirebaseRoomExpirationWorker now has three stages: reservation expiration, stale
 waiting cleanup, and historical closed-temporary message cleanup. Its delay
 remains ten seconds. Reporting captures evidence; cleanup rejects Active and

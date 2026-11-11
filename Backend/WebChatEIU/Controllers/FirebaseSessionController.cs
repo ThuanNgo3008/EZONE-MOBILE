@@ -41,7 +41,7 @@ namespace WebChatEIU.Controllers
                 return Unauthorized();
             }
 
-            if (authUser.Disabled || !authUser.EmailVerified)
+            if (!FirebaseMatchEligibilityService.HasEligibleAuthAccount(authUser))
             {
                 return StatusCode(403, new
                 {
@@ -58,7 +58,7 @@ namespace WebChatEIU.Controllers
                     message = "User profile not found."
                 });
 
-            if (!user.IsActive || user.IsBanned || user.IsDeleted)
+            if (!FirebaseMatchEligibilityService.HasEligibleProfile(user))
             {
                 return StatusCode(403, new
                 {

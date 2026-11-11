@@ -6,10 +6,12 @@ namespace WebChatEIU.Services
     public class FirebaseRandomMatchQueueService
     {
         private readonly FirestoreDb _firestoreDb;
+        private readonly FirebaseMatchEligibilityService _eligibility;
 
-        public FirebaseRandomMatchQueueService(FirestoreDb firestoreDb)
+        public FirebaseRandomMatchQueueService(FirestoreDb firestoreDb, FirebaseMatchEligibilityService eligibility)
         {
             _firestoreDb = firestoreDb;
+            _eligibility = eligibility;
         }
 
         public async Task<string> JoinQueueAsync(string userId)
@@ -19,6 +21,8 @@ namespace WebChatEIU.Services
             {
                 throw new ArgumentException("Invalid user ID.");
             }
+
+            await _eligibility.EnsureAuthEligibleAsync(userId);
 
             var userReference = _firestoreDb
                 .Collection("users")
@@ -52,9 +56,7 @@ namespace WebChatEIU.Services
 
                     var user = userSnapshot.ConvertTo<FirebaseUser>();
 
-                    if (!user.IsActive ||
-                        user.IsBanned ||
-                        user.IsDeleted)
+                    if (!FirebaseMatchEligibilityService.HasEligibleProfile(user))
                     {
                         throw new InvalidOperationException(
                             "User is not eligible for matching.");
@@ -181,6 +183,17 @@ namespace WebChatEIU.Services
                 throw new ArgumentException("Invalid user pair.");
             }
 
+            if (!await _eligibility.IsAuthEligibleAsync(userId))
+                return null;
+
+            return await TryReserveForEligibleRequesterAsync(userId, candidateId);
+        }
+
+        private async Task<string?> TryReserveForEligibleRequesterAsync(string userId, string candidateId)
+        {
+            if (!await _eligibility.IsAuthEligibleAsync(candidateId))
+                return null;
+
             var users = _firestoreDb.Collection("users");
             var queue = _firestoreDb.Collection("randomMatchQueue");
             var sessions = _firestoreDb.Collection("matchSessions");
@@ -242,8 +255,8 @@ namespace WebChatEIU.Services
                     var user1 = user1Snapshot.ConvertTo<FirebaseUser>();
                     var user2 = user2Snapshot.ConvertTo<FirebaseUser>();
 
-                    if (!user1.IsActive || user1.IsBanned || user1.IsDeleted ||
-                        !user2.IsActive || user2.IsBanned || user2.IsDeleted)
+                    if (!FirebaseMatchEligibilityService.HasEligibleProfile(user1) ||
+                        !FirebaseMatchEligibilityService.HasEligibleProfile(user2))
                     {
                         return null;
                     }
@@ -374,13 +387,18 @@ namespace WebChatEIU.Services
 
             if (queueStatus == "Waiting")
             {
+                // Join already checked the requester. Heartbeat only refreshes presence.
+                // Reuse that check for this scan only, never across requests or at Ready.
+                if (!joinIfNeeded && !await _eligibility.IsAuthEligibleAsync(userId))
+                    return ("Waiting", null);
+
                 // Tìm các sinh viên đang chờ.
                 var candidates = GetWaitingCandidatesAsync(userId);
 
                 await foreach (var candidateId in candidates)
                 {
                     // Thử ghép an toàn bằng Firestore Transaction.
-                    var reservationId = await TryReserveCandidateAsync(
+                    var reservationId = await TryReserveForEligibleRequesterAsync(
                         userId,
                         candidateId);
 

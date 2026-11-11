@@ -73,22 +73,21 @@ public sealed class SessionEligibilityTests
         var uid = await data.AccountWithProfileAsync(active: state != "Inactive",
             banned: state == "Banned", deleted: state == "Deleted");
         if (state == "MissingProfile") await data.Database.Collection("users").Document(uid).DeleteAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => new FirebaseRandomMatchQueueService(data.Database).JoinQueueAsync(uid));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => data.Queue.JoinQueueAsync(uid));
         Assert.False((await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync()).Exists);
     }
 
     [Theory]
     [InlineData("Unverified")]
     [InlineData("Disabled")]
-    public async Task EligibilityGap_ActiveProfileCanJoinQueueWhenAuthAccountIsUnavailable(string state)
+    public async Task ActiveProfileCannotJoinQueueWhenAuthAccountIsIneligible(string state)
     {
         await using var data = new AuthWorkflowTestData();
         var uid = await data.AccountWithProfileAsync(verified: state != "Unverified", disabled: state == "Disabled");
         Assert.Equal(403, Status(await Session(data, uid).GetMe()));
         Assert.False(await data.Service.SyncEmailVerificationAsync(uid));
-        // Characterization of a cross-workflow eligibility gap, not an endorsed new rule.
-        Assert.Equal("Waiting", await new FirebaseRandomMatchQueueService(data.Database).JoinQueueAsync(uid));
-        var entry = await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync();
-        Assert.Equal("Waiting", entry.GetValue<string>("Status"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => data.Queue.JoinQueueAsync(uid));
+        Assert.False((await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync()).Exists);
+        Assert.False((await data.Database.Collection("matchSessions").Document(uid).GetSnapshotAsync()).Exists);
     }
 }

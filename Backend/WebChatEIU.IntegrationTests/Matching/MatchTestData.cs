@@ -1,3 +1,5 @@
+using FirebaseAdmin.Auth;
+using WebChatEIU.IntegrationTests.Auth;
 using Google.Cloud.Firestore;
 using WebChatEIU.Models.Firestore;
 using WebChatEIU.Services;
@@ -5,19 +7,37 @@ using WebChatEIU.Services;
 namespace WebChatEIU.IntegrationTests.Matching;
 
 // Owns only uniquely named users and the documents referring to those users.
-internal sealed class MatchTestData(FirestoreDb database) : IAsyncDisposable
+internal sealed class MatchTestData : IAsyncDisposable
 {
     private readonly string prefix = "regression-" + Guid.NewGuid().ToString("N");
     private readonly List<string> users = new();
-    public FirestoreDb Database { get; } = database;
-    public FirebaseRandomMatchQueueService Queue { get; } = new(database);
-    public FirebaseMatchReservationService Reservations { get; } = new(database);
+    private readonly AuthEmulatorFixture authFixture;
+    public FirestoreDb Database { get; }
+    public FirebaseAuth Auth => authFixture.Auth;
+    public int AuthLookupCount => authFixture.Requests.Count(uri => uri.AbsolutePath.EndsWith("/accounts:lookup", StringComparison.Ordinal));
+    public bool RejectAuthLookups { set => authFixture.RejectLookups = value; }
+    public FirebaseRandomMatchQueueService Queue { get; }
+    public FirebaseMatchReservationService Reservations { get; }
+
+    public MatchTestData(FirestoreDb database)
+    {
+        Database = database;
+        authFixture = new AuthEmulatorFixture();
+        var eligibility = new FirebaseMatchEligibilityService(Auth);
+        Queue = new FirebaseRandomMatchQueueService(database, eligibility);
+        Reservations = new FirebaseMatchReservationService(database, eligibility);
+    }
     public DocumentReference Document(string collection, string id) => Database.Collection(collection).Document(id);
 
     public async Task<string> NewUserAsync(bool active = true, bool banned = false, bool deleted = false)
     {
         var id = $"{prefix}-{users.Count}";
         users.Add(id);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await Auth.CreateUserAsync(new UserRecordArgs
+        {
+            Uid = id, Email = id + "@example.invalid", EmailVerified = true, Disabled = false
+        }, timeout.Token);
         await Document("users", id).CreateAsync(new FirebaseUser
         {
             UserId = id, Email = "fixture@eiu.edu.vn", Fullname = "Regression fixture",
@@ -111,21 +131,37 @@ internal sealed class MatchTestData(FirestoreDb database) : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var owned = new List<DocumentReference>();
-        foreach (var collection in new[] { "chatRooms", "matchReservations", "matchHistory" })
+        try
         {
-            var snapshot = await Database.Collection(collection).GetSnapshotAsync(timeout.Token);
-            owned.AddRange(snapshot.Documents.Where(d =>
-                (d.TryGetValue<string>("User1Id", out var a) && users.Contains(a)) ||
-                (d.TryGetValue<string>("User2Id", out var b) && users.Contains(b))).Select(d => d.Reference));
+            var owned = new List<DocumentReference>();
+            foreach (var collection in new[] { "chatRooms", "matchReservations", "matchHistory" })
+            {
+                var snapshot = await Database.Collection(collection).GetSnapshotAsync(timeout.Token);
+                owned.AddRange(snapshot.Documents.Where(d =>
+                    (d.TryGetValue<string>("User1Id", out var a) && users.Contains(a)) ||
+                    (d.TryGetValue<string>("User2Id", out var b) && users.Contains(b))).Select(d => d.Reference));
+            }
+            foreach (var user in users)
+                foreach (var collection in new[] { "users", "randomMatchQueue", "matchSessions" })
+                    owned.Add(Document(collection, user));
+            // Current tests create fewer than 100 documents, with no message/evidence subcollections.
+            if (owned.Count == 0) return;
+            var batch = Database.StartBatch();
+            foreach (var document in owned) batch.Delete(document);
+            await batch.CommitAsync(timeout.Token);
         }
-        foreach (var user in users)
-            foreach (var collection in new[] { "users", "randomMatchQueue", "matchSessions" })
-                owned.Add(Document(collection, user));
-        // Current tests create fewer than 100 documents, with no message/evidence subcollections.
-        if (owned.Count == 0) return;
-        var batch = Database.StartBatch();
-        foreach (var document in owned) batch.Delete(document);
-        await batch.CommitAsync(timeout.Token);
+        finally
+        {
+            try
+            {
+                using var authTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                foreach (var user in users)
+                {
+                    try { await Auth.DeleteUserAsync(user, authTimeout.Token); }
+                    catch (FirebaseAuthException ex) when (ex.AuthErrorCode == AuthErrorCode.UserNotFound) { }
+                }
+            }
+            finally { authFixture.Dispose(); }
+        }
     }
 }

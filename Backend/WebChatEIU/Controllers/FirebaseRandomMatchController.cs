@@ -80,6 +80,10 @@ namespace WebChatEIU.Controllers
             {
                 return BadRequest(new { Error = ex.Message });
             }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { Error = ex.Message });
+            }
         }
 
 

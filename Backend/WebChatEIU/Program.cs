@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using FirebaseAdmin;
+using FirebaseAdmin.Auth;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
 using WebChatEIU.Hubs;
@@ -38,6 +39,8 @@ namespace WebChatEIU
             );
 
             builder.Services.AddScoped<FirebaseTokenService>();
+            builder.Services.AddSingleton(FirebaseAuth.DefaultInstance);
+            builder.Services.AddScoped<FirebaseMatchEligibilityService>();
             builder.Services.AddScoped<FirebaseAuthService>();
             builder.Services.AddScoped<FirebaseUserService>();
             builder.Services.AddScoped<FirebaseChatRoomService>();

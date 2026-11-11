@@ -40,6 +40,7 @@ public sealed class AuthEmulatorFixture : IDisposable
     }
 
     public string ProjectId => app.Options.ProjectId;
+    public bool RejectLookups { set => factory.RejectLookups = value; }
     public IReadOnlyCollection<Uri> Requests => factory.Requests.ToArray();
 
     public void Dispose()

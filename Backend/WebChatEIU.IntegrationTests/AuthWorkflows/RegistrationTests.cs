@@ -41,7 +41,7 @@ public sealed class RegistrationTests
         Assert.Equal(dto.Email, email.Address);
         Assert.Equal(dto.Fullname, email.Name);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            new FirebaseRandomMatchQueueService(data.Database).JoinQueueAsync(uid));
+            data.Queue.JoinQueueAsync(uid));
         Assert.False((await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync()).Exists);
     }
 

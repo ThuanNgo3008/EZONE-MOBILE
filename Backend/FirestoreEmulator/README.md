@@ -98,7 +98,7 @@ dotnet test Backend/WebChatEIU.IntegrationTests/WebChatEIU.IntegrationTests.cspr
 ```
 
 The integration project now includes 22 safety cases, one disposable smoke test,
-47 Random Match/reservation cases, and 39 lifecycle/reporting/cleanup cases.
+81 Random Match/reservation cases, and 39 lifecycle/reporting/cleanup cases.
 Run-Smoke.ps1 runs the complete integration project, including these cases. They instantiate the production queue and
 reservation services directly with the guarded emulator database; no API is started.
 
@@ -189,8 +189,8 @@ Reference: https://firebase.google.com/docs/emulator-suite/connect_auth
 
 `AuthWorkflows` uses the real Auth/User services and guarded emulator clients.
 It adds 38 workflow cases and 10 offline link-safety cases. After the persistent-chat
-refactor the complete run contains 196 integration-project cases and 111 offline
-unit cases (the obsolete decision route contract is replaced by an absence check).
+refactor and Auth eligibility fix the complete run contains 230 integration-project
+cases and 111 offline unit cases.
 Its nonparallel collection refuses any existing default FirebaseApp, creates an
 owned default app with the explicit demo project and synthetic non-refreshable
 credential, verifies ownership before use, and deletes that exact app at teardown.
@@ -219,11 +219,16 @@ HTTP status translation for unhandled errors, or middleware rate limits.
 
 Current behavior is preserved: school-email validation belongs to DTO validation,
 not the registration service; resend delivery exceptions propagate from the action.
-Unresolved issue — Random Match eligibility: an active Firestore profile with
-unverified or disabled Auth is rejected by the
-session action and verification synchronization, but accepted by queue Join's
-profile-only checks. Dedicated characterization tests record this eligibility
-inconsistency without changing production behavior or claiming an HTTP exploit.
+Phase 2D.1 fixes the former Random Match eligibility inconsistency. Queue Join,
+reservation creation, and Ready now check enabled/verified Auth as well as the
+transactional profile rules. The former characterization asserts rejection.
+Matching/lifecycle fixtures provision disposable verified Auth accounts through
+guarded named Admin apps and remove only their own accounts during teardown.
+New cases cover Auth changes after queue entry, both participant positions,
+restored eligibility, and fail-closed Auth lookup errors. A controlled 403 lookup
+response is injected after destination validation; no guard is bypassed. See
+`../PHASE_2D_1_MATCH_ELIGIBILITY.md` for the unavoidable cross-service race and
+deferred HTTP/JWT coverage. Historical phase reports describe their original baseline.
 
 Run-Smoke.ps1 includes these tests automatically. No additional downloads or
 dependency changes are required beyond the existing emulator setup.

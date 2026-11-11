@@ -121,7 +121,7 @@ namespace WebChatEIU.Services
             var authUser = await FirebaseAuth.DefaultInstance
                 .GetUserAsync(uid);
 
-            if (!authUser.EmailVerified || authUser.Disabled)
+            if (!FirebaseMatchEligibilityService.HasEligibleAuthAccount(authUser))
                 return false;
 
             // Kiểm tra hồ sơ Firestore

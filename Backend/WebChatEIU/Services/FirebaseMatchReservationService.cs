@@ -6,10 +6,12 @@ namespace WebChatEIU.Services
     public class FirebaseMatchReservationService
     {
         private readonly FirestoreDb _firestoreDb;
+        private readonly FirebaseMatchEligibilityService _eligibility;
 
-        public FirebaseMatchReservationService(FirestoreDb firestoreDb)
+        public FirebaseMatchReservationService(FirestoreDb firestoreDb, FirebaseMatchEligibilityService eligibility)
         {
             _firestoreDb = firestoreDb;
+            _eligibility = eligibility;
         }
 
         public async Task<string> CreateReservationAsync(
@@ -37,6 +39,9 @@ namespace WebChatEIU.Services
             {
                 throw new ArgumentException("Purpose is required.");
             }
+
+            await _eligibility.EnsureAuthEligibleAsync(user1Id);
+            await _eligibility.EnsureAuthEligibleAsync(user2Id);
 
             var pairId = FirebaseMatchHistoryService.GeneratePairId(
                 user1Id,
@@ -91,8 +96,8 @@ namespace WebChatEIU.Services
                     var user1 = user1Snapshot.ConvertTo<FirebaseUser>();
                     var user2 = user2Snapshot.ConvertTo<FirebaseUser>();
 
-                    if (!user1.IsActive || user1.IsBanned || user1.IsDeleted ||
-                        !user2.IsActive || user2.IsBanned || user2.IsDeleted)
+                    if (!FirebaseMatchEligibilityService.HasEligibleProfile(user1) ||
+                        !FirebaseMatchEligibilityService.HasEligibleProfile(user2))
                     {
                         throw new InvalidOperationException(
                             "Users must be active.");
@@ -198,6 +203,21 @@ namespace WebChatEIU.Services
             var newRoomReference = _firestoreDb
                 .Collection("chatRooms")
                 .Document();
+
+            // Resolve participants before Auth calls, never from a transaction callback.
+            var preflightSnapshot = await reservationReference.GetSnapshotAsync();
+            if (!preflightSnapshot.Exists)
+                throw new InvalidOperationException("Reservation not found.");
+            var preflight = preflightSnapshot.ConvertTo<FirebaseMatchReservation>();
+            if (preflight.User1Id != userId && preflight.User2Id != userId)
+                throw new UnauthorizedAccessException("Access denied.");
+            bool authChecked = preflight.Status == "PendingReady" &&
+                DateTime.UtcNow < preflight.ReadyExpiresAt.ToDateTime();
+            if (authChecked)
+            {
+                await _eligibility.EnsureAuthEligibleAsync(preflight.User1Id);
+                await _eligibility.EnsureAuthEligibleAsync(preflight.User2Id);
+            }
 
             return await _firestoreDb.RunTransactionAsync<(string Status, string? RoomId)>(async transaction =>
             {
@@ -350,6 +370,10 @@ namespace WebChatEIU.Services
                 }
 
 
+                if (!authChecked || reservation.User1Id != preflight.User1Id ||
+                    reservation.User2Id != preflight.User2Id)
+                    throw new InvalidOperationException("Reservation participants require a new eligibility check.");
+
                 if (session1 == null || session2 == null)
                 {
                     throw new InvalidOperationException(
@@ -391,7 +415,8 @@ namespace WebChatEIU.Services
                 var user1 = user1Snapshot.ConvertTo<FirebaseUser>();
                 var user2 = user2Snapshot.ConvertTo<FirebaseUser>();
 
-                if (!user1.IsActive || user1.IsBanned || user1.IsDeleted || !user2.IsActive || user2.IsBanned || user2.IsDeleted)
+                if (!FirebaseMatchEligibilityService.HasEligibleProfile(user1) ||
+                    !FirebaseMatchEligibilityService.HasEligibleProfile(user2))
                 {
                     throw new InvalidOperationException("Users must be active.");
                 }

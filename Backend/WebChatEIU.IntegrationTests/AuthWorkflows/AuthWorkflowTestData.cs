@@ -44,6 +44,7 @@ internal sealed class AuthWorkflowTestData : IAsyncDisposable
     public FirestoreDb Database { get; }
     public FirebaseUserService Users { get; }
     public RecordingEmailService Email { get; } = new();
+    public FirebaseRandomMatchQueueService Queue => new(Database, new FirebaseMatchEligibilityService(Auth));
     public FirebaseAuthService Service { get { AssertOwnership(); return service; } }
     public FirebaseAuth Auth { get { AssertOwnership(); return FirebaseAuth.GetAuth(app); } }
     public Func<string, Task>? AfterAccountCreated { set => factory.AfterAccountCreated = value; }

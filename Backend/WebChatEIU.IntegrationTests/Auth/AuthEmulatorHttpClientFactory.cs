@@ -9,15 +9,31 @@ internal sealed class AuthEmulatorHttpClientFactory(AuthEmulatorSettings setting
     : Google.Apis.Http.HttpClientFactory
 {
     public ConcurrentQueue<Uri> Requests { get; } = new();
+    public bool RejectLookups { get; set; }
 
     protected override HttpMessageHandler CreateHandler(CreateHttpClientArgs args) =>
         new AuthEmulatorRequestHandler(settings, Requests,
-            new HttpClientHandler
+            new LookupFailureHandler(this, new HttpClientHandler
             {
                 AllowAutoRedirect = false,
                 UseProxy = false,
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-            }, revalidateEnvironment: true);
+            }), revalidateEnvironment: true);
+
+    // Controlled SDK error response after destination validation, never an external call.
+    private sealed class LookupFailureHandler(AuthEmulatorHttpClientFactory owner, HttpMessageHandler inner)
+        : DelegatingHandler(inner)
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (owner.RejectLookups && request.RequestUri!.AbsolutePath.EndsWith("/accounts:lookup", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("{\"error\":{\"code\":403,\"message\":\"PERMISSION_DENIED\"}}")
+                });
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
 }
 
 internal sealed class AuthEmulatorRequestHandler(
