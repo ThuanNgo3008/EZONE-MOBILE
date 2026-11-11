@@ -60,7 +60,7 @@ namespace WebChatEIU.Services
         }
 
         public async Task<FirebaseChatRoom?> GetRoomByIdAsync(
-            string roomId)
+            string roomId, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -69,7 +69,7 @@ namespace WebChatEIU.Services
 
             var snapshot = await _rooms
                 .Document(roomId)
-                .GetSnapshotAsync();
+                .GetSnapshotAsync(cancellationToken);
 
             if (!snapshot.Exists)
             {

@@ -16,7 +16,8 @@ namespace WebChatEIU.Services
         public async Task<FirebaseChatMessage> SendMessageAsync(
             string roomId,
             string senderId,
-            string content)
+            string content,
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(roomId) ||
                 roomId.Contains('/') ||
@@ -87,7 +88,7 @@ namespace WebChatEIU.Services
 
 
                 transaction.Create(messageReference, message);
-            });
+            }, cancellationToken: cancellationToken);
 
             return message;
         }

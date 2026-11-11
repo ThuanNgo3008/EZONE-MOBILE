@@ -14,9 +14,9 @@ namespace WebChatEIU.Services
 
 
         // Lấy thông tin người dùng theo Firebase UID
-        public async Task<FirebaseUser?> GetByIdAsync(string uid)
+        public async Task<FirebaseUser?> GetByIdAsync(string uid, CancellationToken cancellationToken = default)
         {
-            var snapshot = await _users.Document(uid).GetSnapshotAsync();
+            var snapshot = await _users.Document(uid).GetSnapshotAsync(cancellationToken);
 
             if (!snapshot.Exists)
                 return null;

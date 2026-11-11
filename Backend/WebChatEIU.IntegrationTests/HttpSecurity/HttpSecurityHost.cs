@@ -39,7 +39,7 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
         }
     }
 
-    public async Task StartAsync(bool useKestrel = false, bool strictExpiry = false)
+    public async Task StartAsync(bool useKestrel = false)
     {
         settings.AssertEnvironmentUnchanged();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -68,7 +68,6 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
             options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration);
             options.TokenValidationParameters.ValidIssuer = issuer;
             options.TokenValidationParameters.ValidAudience = settings.ProjectId;
-            if (strictExpiry) options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
         });
 
         app = builder.Build();
@@ -88,6 +87,12 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
         settings.AssertEnvironmentUnchanged();
         var password = Guid.NewGuid().ToString("N");
         var uid = await data.AccountWithProfileAsync(verified: verified, password: password);
+        return (uid, await SignInAccountAsync(uid, password));
+    }
+
+    public async Task<string> SignInAccountAsync(string uid, string password)
+    {
+        settings.AssertEnvironmentUnchanged();
         var account = await data.Auth.GetUserAsync(uid);
         using var authClient = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
             { Timeout = TimeSpan.FromSeconds(10) };
@@ -103,7 +108,7 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
         Assert.Equal($"https://securetoken.google.com/{settings.ProjectId}", decoded.Issuer);
         Assert.Equal(settings.ProjectId, Assert.Single(decoded.Audiences));
         Assert.Equal(uid, decoded.Payload["user_id"]);
-        return (uid, token);
+        return token;
     }
 
     public string Sign(string emulatorToken, Action<JwtPayload>? modify = null)

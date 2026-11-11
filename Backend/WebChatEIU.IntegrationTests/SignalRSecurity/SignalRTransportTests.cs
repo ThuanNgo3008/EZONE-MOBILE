@@ -35,13 +35,11 @@ public sealed class SignalRTransportTests
                 payload["exp"] = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
                 payload["iat"] = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeSeconds();
             }),
-            "Revoked" => scenario.Host.Sign(unsigned, payload =>
-                payload["auth_time"] = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeSeconds()),
             _ => validToken
         };
 
         if (state is "Disabled" or "Deleted" or "Revoked" or "AuthUnavailable")
-            await ChangeAuthStateAsync(scenario, uid, state);
+            await ChangeAuthStateAsync(scenario, uid, state, unsigned);
 
         await AssertConnectionRejectedAsync(scenario, token, expected);
     }
@@ -77,6 +75,7 @@ public sealed class SignalRTransportTests
         var ab = await scenario.CreateRoomAsync(aId, bId);
         var ac = await scenario.CreateRoomAsync(aId, cId);
         await a.JoinAsync(ab);
+        await a.JoinAsync(ab);
         await a.JoinAsync(ac);
         await b.JoinAsync(ab);
         await c.JoinAsync(ac);
@@ -93,6 +92,7 @@ public sealed class SignalRTransportTests
         Assert.Equal("Hello in the first room", first.Content);
         Assert.Equal("User1", first.SenderRole);
         Assert.Equal(first, await a.ReceiveAsync());
+        await a.AssertNoQueuedMessageAsync();
         Assert.True((await scenario.Data.Database.Collection("chatRooms").Document(ab)
             .Collection("messages").Document(first.MessageId).GetSnapshotAsync()).Exists);
         await c.AssertNoQueuedMessageAsync();
@@ -121,7 +121,7 @@ public sealed class SignalRTransportTests
     [InlineData("Deleted", HttpStatusCode.Unauthorized)]
     [InlineData("Revoked", HttpStatusCode.Unauthorized)]
     [InlineData("AuthUnavailable", HttpStatusCode.ServiceUnavailable)]
-    public async Task KnownGap_EstablishedWebSocketKeepsSendingAndReceivingAfterAuthChanges(
+    public async Task EstablishedWebSocketStopsReceivingAfterAuthChanges(
         string state, HttpStatusCode newConnectionStatus)
     {
         await using var scenario = new SignalRScenario();
@@ -130,31 +130,65 @@ public sealed class SignalRTransportTests
         var (partnerId, partnerUnsigned) = await scenario.Host.SignInAsync();
         var token = scenario.Host.Sign(unsigned);
         var peer = await scenario.ConnectAsync(token);
+        var secondPeer = await scenario.ConnectAsync(token);
         var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerUnsigned));
         var room = await scenario.CreateRoomAsync(uid, partnerId);
         await peer.JoinAsync(room);
+        await secondPeer.JoinAsync(room);
         await partner.JoinAsync(room);
 
-        if (state == "Revoked")
-        {
-            var seconds = long.Parse(new JwtSecurityTokenHandler().ReadJwtToken(unsigned).Claims
-                .Single(claim => claim.Type == "auth_time").Value, CultureInfo.InvariantCulture);
-            // Ensure the emulator's whole-second revocation cutoff is strictly later.
-            await WaitUntilAsync(DateTimeOffset.FromUnixTimeSeconds(seconds + 1));
-        }
-        await ChangeAuthStateAsync(scenario, uid, state);
+        await ChangeAuthStateAsync(scenario, uid, state, unsigned);
         await AssertConnectionRejectedAsync(scenario, token, newConnectionStatus);
 
-        // Expected security behavior is to block this send and remove the subscription.
-        await AssertEstablishedMessageAccessAsync(peer, partner, room);
+        if (state == "AuthUnavailable")
+        {
+            // An outage makes both accounts unverifiable, including the attempted sender.
+            await AssertSendDeniedAsync(partner, room);
+            await partner.AssertClosedWithoutMessagesAsync();
+            await AssertStoredMessagesAsync(scenario, room);
+        }
+        else
+        {
+            await partner.SendAsync(room, "Only the authorized partner receives this");
+            Assert.Equal("Only the authorized partner receives this", (await partner.ReceiveAsync()).Content);
+            await AssertStoredMessagesAsync(scenario, room, "Only the authorized partner receives this");
+        }
+
+        // During a lookup outage the passive peer is checked by the idle sweep.
+        var closeTimeout = state == "AuthUnavailable" ? TimeSpan.FromSeconds(25) : (TimeSpan?)null;
+        await Task.WhenAll(peer.AssertClosedWithoutMessagesAsync(closeTimeout),
+            secondPeer.AssertClosedWithoutMessagesAsync(closeTimeout));
+        await AssertSendDeniedAsync(peer, room);
+        await AssertSendDeniedAsync(secondPeer, room);
+    }
+
+    [Theory]
+    [InlineData("Disabled")]
+    [InlineData("Deleted")]
+    [InlineData("Revoked")]
+    [InlineData("AuthUnavailable")]
+    public async Task EstablishedWebSocketCannotPersistAfterAuthChanges(string state)
+    {
+        await using var scenario = new SignalRScenario();
+        await scenario.StartAsync();
+        var (uid, unsigned) = await scenario.Host.SignInAsync();
+        var (partnerId, _) = await scenario.Host.SignInAsync();
+        var peer = await scenario.ConnectAsync(scenario.Host.Sign(unsigned));
+        var room = await scenario.CreateRoomAsync(uid, partnerId);
+        await peer.JoinAsync(room);
+
+        await ChangeAuthStateAsync(scenario, uid, state, unsigned);
+        await AssertSendDeniedAsync(peer, room);
+        await peer.AssertClosedWithoutMessagesAsync();
+        await AssertStoredMessagesAsync(scenario, room);
     }
 
     [Fact]
-    public async Task KnownGap_EstablishedWebSocketContinuesPastTokenExpiration()
+    public async Task IdleWebSocketClosesAtTokenExpirationAndCannotReconnect()
     {
         await using var scenario = new SignalRScenario();
-        // Zero skew is test-only and makes new connections reject immediately after exp.
-        await scenario.StartAsync(strictExpiry: true);
+        // Use the same JWT clock-skew settings as production.
+        await scenario.StartAsync();
         var (uid, unsigned) = await scenario.Host.SignInAsync();
         var (partnerId, partnerUnsigned) = await scenario.Host.SignInAsync();
         var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerUnsigned));
@@ -164,13 +198,49 @@ public sealed class SignalRTransportTests
         var token = scenario.Host.Sign(unsigned, payload => payload["exp"] = expires.ToUnixTimeSeconds());
         var peer = await scenario.ConnectAsync(token);
         await peer.JoinAsync(room);
-        await WaitUntilAsync(expires.AddMilliseconds(100));
+        // No invocation or broadcast is needed to trigger closure.
+        await peer.AssertClosedWithoutMessagesAsync();
+        Assert.True(DateTimeOffset.UtcNow >= expires);
         await AssertConnectionRejectedAsync(scenario, token, HttpStatusCode.Unauthorized);
-        await AssertEstablishedMessageAccessAsync(peer, partner, room);
+        await AssertSendDeniedAsync(peer, room);
+        await partner.SendAsync(room, "After the peer token expired");
+        Assert.Equal("After the peer token expired", (await partner.ReceiveAsync()).Content);
+        await peer.AssertClosedWithoutMessagesAsync();
+        await AssertStoredMessagesAsync(scenario, room, "After the peer token expired");
     }
 
     [Fact]
-    public async Task KnownGap_RemovedRoomMemberStillReceivesOnBothExistingConnections()
+    public async Task RevocationEvictsOldSocketButKeepsNewLoginForSameAccount()
+    {
+        await using var scenario = new SignalRScenario();
+        await scenario.StartAsync();
+        var password = Guid.NewGuid().ToString("N");
+        var uid = await scenario.Data.AccountWithProfileAsync(password: password);
+        var firstToken = await scenario.Host.SignInAccountAsync(uid, password);
+        var old = await scenario.ConnectAsync(scenario.Host.Sign(firstToken));
+        var (partnerId, partnerToken) = await scenario.Host.SignInAsync();
+        var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerToken));
+        var room = await scenario.CreateRoomAsync(uid, partnerId);
+        await old.JoinAsync(room);
+        await partner.JoinAsync(room);
+
+        await ChangeAuthStateAsync(scenario, uid, "Revoked", firstToken);
+        var newToken = await scenario.Host.SignInAccountAsync(uid, password);
+        var current = await scenario.ConnectAsync(scenario.Host.Sign(newToken));
+        await current.JoinAsync(room);
+
+        await partner.SendAsync(room, "The new login remains authorized");
+        Assert.Equal("The new login remains authorized", (await current.ReceiveAsync()).Content);
+        await current.AssertNoQueuedMessageAsync();
+        await old.AssertClosedWithoutMessagesAsync();
+        await AssertConnectionRejectedAsync(scenario, scenario.Host.Sign(firstToken), HttpStatusCode.Unauthorized);
+        await current.SendAsync(room, "The new login can reply");
+        Assert.Equal("The new login remains authorized", (await partner.ReceiveAsync()).Content);
+        Assert.Equal("The new login can reply", (await partner.ReceiveAsync()).Content);
+    }
+
+    [Fact]
+    public async Task RemovedMemberLosesBothSubscriptionsAndCanStillUseOtherRoom()
     {
         await using var scenario = new SignalRScenario();
         await scenario.StartAsync();
@@ -187,11 +257,17 @@ public sealed class SignalRTransportTests
         var unaffectedRoom = await scenario.CreateRoomAsync(uid, replacementId);
         await peer.JoinAsync(room);
         await secondPeer.JoinAsync(room);
+        await peer.JoinAsync(unaffectedRoom);
         await secondPeer.JoinAsync(unaffectedRoom);
         await partner.JoinAsync(room);
         await replacement.JoinAsync(unaffectedRoom);
         await scenario.Data.Database.Collection("chatRooms").Document(room).UpdateAsync("User1Id", replacementId);
 
+        // Exercise passive delivery before either former member makes another request.
+        await partner.SendAsync(room, "Current member send");
+        Assert.Equal("Current member send", (await partner.ReceiveAsync()).Content);
+        await peer.AssertNoQueuedMessageAsync();
+        await secondPeer.AssertNoQueuedMessageAsync();
         foreach (var formerMember in new[] { peer, secondPeer })
         {
             var denied = await Assert.ThrowsAsync<HubException>(() => formerMember.SendAsync(room, "Former member send"));
@@ -199,16 +275,164 @@ public sealed class SignalRTransportTests
             denied = await Assert.ThrowsAsync<HubException>(() => formerMember.JoinAsync(room));
             Assert.Contains("Access denied.", denied.Message);
         }
-        await partner.SendAsync(room, "Current member send");
-        var message = await partner.ReceiveAsync();
-        Assert.Equal("Current member send", message.Content);
-        // Expected security behavior is to evict both old subscriptions for this room.
-        Assert.Equal(message, await peer.ReceiveAsync());
-        Assert.Equal(message, await secondPeer.ReceiveAsync());
-
         await replacement.SendAsync(unaffectedRoom, "Other room stays available");
         Assert.Equal("Other room stays available", (await secondPeer.ReceiveAsync()).Content);
-        await peer.AssertNoQueuedMessageAsync();
+        Assert.Equal("Other room stays available", (await peer.ReceiveAsync()).Content);
+        Assert.Equal("Other room stays available", (await replacement.ReceiveAsync()).Content);
+        await partner.AssertNoQueuedMessageAsync();
+
+        await peer.Connection.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var reconnected = await scenario.ConnectAsync(token);
+        var reconnectDenied = await Assert.ThrowsAsync<HubException>(() => reconnected.JoinAsync(room));
+        Assert.Contains("Access denied.", reconnectDenied.Message);
+        await reconnected.JoinAsync(unaffectedRoom);
+        await partner.SendAsync(room, "After former member reconnect");
+        Assert.Equal("After former member reconnect", (await partner.ReceiveAsync()).Content);
+        await reconnected.AssertNoQueuedMessageAsync();
+        await secondPeer.AssertNoQueuedMessageAsync();
+        await replacement.AssertNoQueuedMessageAsync();
+
+        // Restoring membership in the disposable fixture must not resurrect the old subscription.
+        await scenario.Data.Database.Collection("chatRooms").Document(room).UpdateAsync("User1Id", uid);
+        await partner.SendAsync(room, "Restored membership still requires rejoining");
+        Assert.Equal("Restored membership still requires rejoining", (await partner.ReceiveAsync()).Content);
+        await secondPeer.AssertNoQueuedMessageAsync();
+        await reconnected.AssertNoQueuedMessageAsync();
+    }
+
+    [Fact]
+    public async Task ReportClosesOnlyReportedRoomAndPreservesMessageEvidence()
+    {
+        await using var scenario = new SignalRScenario();
+        await scenario.StartAsync();
+        var (uid, unsigned) = await scenario.Host.SignInAsync();
+        var (partnerId, partnerToken) = await scenario.Host.SignInAsync();
+        var (otherId, otherToken) = await scenario.Host.SignInAsync();
+        var token = scenario.Host.Sign(unsigned);
+        var peer = await scenario.ConnectAsync(token);
+        var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerToken));
+        var other = await scenario.ConnectAsync(scenario.Host.Sign(otherToken));
+        var room = await scenario.CreateRoomAsync(uid, partnerId);
+        var otherRoom = await scenario.CreateRoomAsync(uid, otherId);
+        await peer.JoinAsync(room);
+        await partner.JoinAsync(room);
+        await peer.JoinAsync(otherRoom);
+        await other.JoinAsync(otherRoom);
+
+        const string content = "This message is evidence";
+        await partner.SendAsync(room, content);
+        var reported = await peer.ReceiveAsync();
+        Assert.Equal(content, reported.Content);
+        Assert.Equal(reported, await partner.ReceiveAsync());
+        using var response = await scenario.Host.SendAsync(HttpMethod.Post, $"/api/firebase-chat-rooms/{room}/reports",
+            token, new { ReportType = "Message", Reason = "Test report", ReportedMessageId = reported.MessageId });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var denied = await Assert.ThrowsAsync<HubException>(() => partner.SendAsync(room, "Closed after report"));
+        Assert.Contains("Room is unavailable.", denied.Message);
+        denied = await Assert.ThrowsAsync<HubException>(() => peer.JoinAsync(room));
+        Assert.Contains("Room is unavailable.", denied.Message);
+        await other.SendAsync(otherRoom, "The unreported room stays open");
+        Assert.Equal("The unreported room stays open", (await peer.ReceiveAsync()).Content);
+        await partner.AssertNoQueuedMessageAsync();
+        await AssertStoredMessagesAsync(scenario, room, content);
+        var reports = await scenario.Data.Database.Collection("reports").WhereEqualTo("RoomId", room).GetSnapshotAsync();
+        var report = Assert.Single(reports.Documents);
+        var evidence = await report.Reference.Collection("evidence").GetSnapshotAsync();
+        Assert.Contains(evidence.Documents, entry => entry.GetValue<string>("Content") == content);
+    }
+
+    [Fact]
+    public async Task ConcurrentJoinAndUnmatchCannotRestoreClosedRoomAccess()
+    {
+        await using var scenario = new SignalRScenario();
+        await scenario.StartAsync();
+        var (uid, unsigned) = await scenario.Host.SignInAsync();
+        var (partnerId, partnerUnsigned) = await scenario.Host.SignInAsync();
+        var token = scenario.Host.Sign(unsigned);
+        var peer = await scenario.ConnectAsync(token);
+        var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerUnsigned));
+        var room = await scenario.CreateRoomAsync(uid, partnerId);
+        await partner.JoinAsync(room);
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var join = JoinOnStartAsync();
+        var close = CloseOnStartAsync();
+        start.SetResult();
+        await Task.WhenAll(join, close).WaitAsync(TimeSpan.FromSeconds(15));
+
+        foreach (var connection in new[] { peer, partner })
+        {
+            var error = await Assert.ThrowsAsync<HubException>(() => connection.JoinAsync(room));
+            Assert.Contains("Room is unavailable.", error.Message);
+            error = await Assert.ThrowsAsync<HubException>(() => connection.SendAsync(room, "Closed room send"));
+            Assert.Contains("Room is unavailable.", error.Message);
+            await connection.AssertNoQueuedMessageAsync();
+        }
+        await AssertStoredMessagesAsync(scenario, room);
+
+        async Task JoinOnStartAsync()
+        {
+            await start.Task;
+            try
+            {
+                await peer.JoinAsync(room);
+            }
+            catch (HubException ex)
+            {
+                Assert.Contains("Room is unavailable.", ex.Message);
+            }
+        }
+
+        async Task CloseOnStartAsync()
+        {
+            await start.Task;
+            using var response = await scenario.Host.SendAsync(HttpMethod.Post, $"/api/firebase-chat-rooms/{room}/unmatch", token);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task DisconnectDuringBroadcastLeavesSiblingSocketAuthorized()
+    {
+        await using var scenario = new SignalRScenario();
+        await scenario.StartAsync();
+        var (uid, unsigned) = await scenario.Host.SignInAsync();
+        var (partnerId, partnerUnsigned) = await scenario.Host.SignInAsync();
+        var token = scenario.Host.Sign(unsigned);
+        var departing = await scenario.ConnectAsync(token);
+        var staying = await scenario.ConnectAsync(token);
+        var partner = await scenario.ConnectAsync(scenario.Host.Sign(partnerUnsigned));
+        var room = await scenario.CreateRoomAsync(uid, partnerId);
+        await departing.JoinAsync(room);
+        await staying.JoinAsync(room);
+        await partner.JoinAsync(room);
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disconnect = OnStartAsync(() => departing.Connection.StopAsync());
+        var broadcast = OnStartAsync(() => partner.SendAsync(room, "Broadcast during disconnect"));
+        start.SetResult();
+        await Task.WhenAll(disconnect, broadcast).WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(HubConnectionState.Disconnected, departing.Connection.State);
+        var received = await staying.ReceiveAsync();
+        Assert.Equal("Broadcast during disconnect", received.Content);
+        Assert.Equal(received, await partner.ReceiveAsync());
+        await staying.AssertNoQueuedMessageAsync();
+        await AssertStoredMessagesAsync(scenario, room, received.Content);
+
+        using var unmatch = await scenario.Host.SendAsync(HttpMethod.Post, $"/api/firebase-chat-rooms/{room}/unmatch", token);
+        Assert.Equal(HttpStatusCode.OK, unmatch.StatusCode);
+        var reconnected = await scenario.ConnectAsync(token);
+        var denied = await Assert.ThrowsAsync<HubException>(() => reconnected.JoinAsync(room));
+        Assert.Contains("Room is unavailable.", denied.Message);
+        await reconnected.AssertNoQueuedMessageAsync();
+
+        async Task OnStartAsync(Func<Task> operation)
+        {
+            await start.Task;
+            await operation();
+        }
     }
 
     [Fact]
@@ -253,13 +477,18 @@ public sealed class SignalRTransportTests
         Assert.False(notification.Task.IsCompleted);
     }
 
-    private static async Task AssertEstablishedMessageAccessAsync(SignalRPeer peer, SignalRPeer partner, string room)
+    private static async Task AssertSendDeniedAsync(SignalRPeer peer, string room)
     {
-        await peer.SendAsync(room, "Send after security state changed");
-        Assert.Equal("Send after security state changed", (await partner.ReceiveAsync()).Content);
-        Assert.Equal("Send after security state changed", (await peer.ReceiveAsync()).Content);
-        await partner.SendAsync(room, "Receive after security state changed");
-        Assert.Equal("Receive after security state changed", (await peer.ReceiveAsync()).Content);
+        var error = await Record.ExceptionAsync(() => peer.SendAsync(room, "Send after security state changed"));
+        Assert.True(error is HubException or InvalidOperationException or OperationCanceledException,
+            $"Expected a denied or closed invocation, got {error?.GetType().Name ?? "success"}.");
+    }
+
+    private static async Task AssertStoredMessagesAsync(SignalRScenario scenario, string room, params string[] expected)
+    {
+        var snapshot = await scenario.Data.Database.Collection("chatRooms").Document(room)
+            .Collection("messages").GetSnapshotAsync();
+        Assert.Equal(expected, snapshot.Documents.Select(message => message.GetValue<string>("Content")));
     }
 
     private static async Task AssertConnectionRejectedAsync(SignalRScenario scenario, string? token, HttpStatusCode expected)
@@ -270,7 +499,7 @@ public sealed class SignalRTransportTests
         Assert.Equal(HubConnectionState.Disconnected, connection.State);
     }
 
-    private static async Task ChangeAuthStateAsync(SignalRScenario scenario, string uid, string state)
+    private static async Task ChangeAuthStateAsync(SignalRScenario scenario, string uid, string state, string unsignedToken)
     {
         switch (state)
         {
@@ -281,7 +510,17 @@ public sealed class SignalRTransportTests
                 await scenario.Data.Auth.DeleteUserAsync(uid);
                 break;
             case "Revoked":
+                var seconds = long.Parse(new JwtSecurityTokenHandler().ReadJwtToken(unsignedToken).Claims
+                    .Single(claim => claim.Type == "auth_time").Value, CultureInfo.InvariantCulture);
+                var authenticatedAt = DateTimeOffset.FromUnixTimeSeconds(seconds);
+                // Wait until the emulator can record a strictly later whole-second cutoff.
+                var delay = authenticatedAt.AddSeconds(1).AddMilliseconds(100) - DateTimeOffset.UtcNow;
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay);
                 await scenario.Data.Auth.RevokeRefreshTokensAsync(uid);
+                var revoked = await scenario.Data.Auth.GetUserAsync(uid);
+                Assert.True(revoked.TokensValidAfterTimestamp > authenticatedAt.UtcDateTime,
+                    "The emulator did not advance the revocation cutoff past the token's authentication time.");
                 break;
             case "AuthUnavailable":
                 scenario.Data.LookupFailureStatus = HttpStatusCode.Forbidden;
@@ -289,9 +528,4 @@ public sealed class SignalRTransportTests
         }
     }
 
-    private static Task WaitUntilAsync(DateTimeOffset instant)
-    {
-        var delay = instant - DateTimeOffset.UtcNow;
-        return delay > TimeSpan.Zero ? Task.Delay(delay) : Task.CompletedTask;
-    }
 }

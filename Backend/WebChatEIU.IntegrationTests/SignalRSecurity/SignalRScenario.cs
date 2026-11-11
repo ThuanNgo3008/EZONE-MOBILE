@@ -18,7 +18,7 @@ internal sealed class SignalRScenario : IAsyncDisposable
 
     public SignalRScenario() => Host = new HttpSecurityHost(Data);
 
-    public Task StartAsync(bool strictExpiry = false) => Host.StartAsync(useKestrel: true, strictExpiry: strictExpiry);
+    public Task StartAsync() => Host.StartAsync(useKestrel: true);
 
     public async Task<string> CreateRoomAsync(string first, string second)
     {
@@ -111,8 +111,16 @@ internal sealed class SignalRScenario : IAsyncDisposable
                     var messages = await room.Collection("messages").GetSnapshotAsync(timeout.Token);
                     var history = await Data.Database.Collection("matchHistory").WhereEqualTo("RoomId", id)
                         .GetSnapshotAsync(timeout.Token);
+                    var reports = await Data.Database.Collection("reports").WhereEqualTo("RoomId", id)
+                        .GetSnapshotAsync(timeout.Token);
                     var batch = Data.Database.StartBatch();
-                    foreach (var entry in messages.Documents.Concat(history.Documents))
+                    foreach (var report in reports.Documents)
+                    {
+                        var evidence = await report.Reference.Collection("evidence").GetSnapshotAsync(timeout.Token);
+                        foreach (var entry in evidence.Documents)
+                            batch.Delete(entry.Reference);
+                    }
+                    foreach (var entry in messages.Documents.Concat(history.Documents).Concat(reports.Documents))
                         batch.Delete(entry.Reference);
                     batch.Delete(room);
                     await batch.CommitAsync(timeout.Token);
@@ -130,6 +138,7 @@ internal sealed class SignalRPeer
 {
     private readonly Channel<string> joined = Channel.CreateUnbounded<string>();
     private readonly Channel<RoomMessage> received = Channel.CreateUnbounded<RoomMessage>();
+    private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public HubConnection Connection { get; }
 
     public SignalRPeer(HubConnection connection)
@@ -137,6 +146,11 @@ internal sealed class SignalRPeer
         Connection = connection;
         connection.On<string>("JoinedRoom", room => joined.Writer.TryWrite(room));
         connection.On<RoomMessage>("ReceiveMessage", message => received.Writer.TryWrite(message));
+        connection.Closed += _ =>
+        {
+            closed.TrySetResult();
+            return Task.CompletedTask;
+        };
     }
 
     public async Task JoinAsync(string room)
@@ -161,8 +175,15 @@ internal sealed class SignalRPeer
     public async Task AssertNoQueuedMessageAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        // Ping's reply follows any previously enqueued group sends on this connection.
+        // Ping's reply follows any previously enqueued sends on this connection.
         Assert.Equal("pong", await Connection.InvokeAsync<string>("Ping", timeout.Token));
+        Assert.False(received.Reader.TryRead(out _));
+    }
+
+    public async Task AssertClosedWithoutMessagesAsync(TimeSpan? timeout = null)
+    {
+        await closed.Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(12));
+        Assert.Equal(HubConnectionState.Disconnected, Connection.State);
         Assert.False(received.Reader.TryRead(out _));
     }
 }

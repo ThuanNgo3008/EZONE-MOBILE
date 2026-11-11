@@ -67,6 +67,8 @@ namespace WebChatEIU
             // ===========================
             services.AddControllers();
             services.AddSignalR();
+            services.AddSingleton<FirebaseChatConnections>();
+            services.AddHostedService(services => services.GetRequiredService<FirebaseChatConnections>());
 
             services.AddSingleton<ModerationService>();
 
@@ -132,7 +134,7 @@ namespace WebChatEIU
                             var path = context.HttpContext.Request.Path;
 
                             if (!string.IsNullOrEmpty(accessToken) &&
-                                path.StartsWithSegments("/firebaseChatHub"))
+                                path.StartsWithSegments(FirebaseChatHub.Route))
                             {
                                 context.Token = accessToken;
                             }
@@ -243,7 +245,8 @@ namespace WebChatEIU
             // ENDPOINTS
             // ===========================
             app.MapControllers();
-            app.MapHub<FirebaseChatHub>("/firebaseChatHub");
+            app.MapHub<FirebaseChatHub>(FirebaseChatHub.Route, options =>
+                options.CloseOnAuthenticationExpiration = true);
         }
     }
 }

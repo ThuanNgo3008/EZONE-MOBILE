@@ -1,12 +1,22 @@
 using FirebaseAdmin.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.JsonWebTokens;
+using WebChatEIU.Hubs;
 
 namespace WebChatEIU.Services;
 
 internal static class FirebaseBearerSession
 {
     private static readonly object AuthUnavailable = new();
+    internal static readonly object ValidatedSessionKey = new();
+
+    internal sealed record Session(string Uid, DateTime AuthenticatedAt, DateTime ExpiresAt);
+
+    internal readonly record struct AccountStatus(DateTime? ValidAfter, bool Unavailable = false)
+    {
+        public bool Allows(Session session) =>
+            ValidAfter is DateTime cutoff && session.AuthenticatedAt >= cutoff;
+    }
 
     public static async Task ValidateAsync(TokenValidatedContext context)
     {
@@ -24,26 +34,49 @@ internal static class FirebaseBearerSession
             return;
         }
 
+        var session = new Session(uid, DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime, token.ValidTo);
+        if (context.HttpContext.Request.Path.StartsWithSegments(FirebaseChatHub.Route) &&
+            session.ExpiresAt <= DateTime.UtcNow)
+        {
+            context.Fail("Firebase session has expired.");
+            return;
+        }
+
         var auth = context.HttpContext.RequestServices.GetRequiredService<FirebaseAuth>();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.HttpContext.RequestAborted);
+        var status = await GetAccountStatusAsync(auth, uid, context.HttpContext.RequestAborted);
+        if (status.Unavailable)
+        {
+            context.HttpContext.Items[AuthUnavailable] = true;
+            context.Fail("Firebase account lookup failed.");
+        }
+        else if (!status.Allows(session))
+        {
+            context.Fail("Firebase session is unavailable.");
+        }
+        else
+        {
+            context.HttpContext.Items[ValidatedSessionKey] = session;
+        }
+    }
+
+    internal static async Task<AccountStatus> GetAccountStatusAsync(
+        FirebaseAuth auth, string uid, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         try
         {
             var user = await auth.GetUserAsync(uid, timeout.Token);
-            // The Admin SDK exposes validSince as a UTC DateTime.
-            var authenticatedAt = DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime;
-            if (user.Disabled || authenticatedAt < user.TokensValidAfterTimestamp)
-                context.Fail("Firebase session is unavailable.");
+            return user.Disabled ? default : new(user.TokensValidAfterTimestamp);
         }
         catch (FirebaseAuthException ex) when (ex.AuthErrorCode == AuthErrorCode.UserNotFound)
         {
-            context.Fail("Firebase session is unavailable.");
+            return default;
         }
         catch (Exception ex) when (ex is FirebaseAuthException or HttpRequestException ||
-                                   ex is OperationCanceledException && !context.HttpContext.RequestAborted.IsCancellationRequested)
+                                   ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
-            context.HttpContext.Items[AuthUnavailable] = true;
-            context.Fail("Firebase account lookup failed.");
+            return new(null, Unavailable: true);
         }
     }
 
