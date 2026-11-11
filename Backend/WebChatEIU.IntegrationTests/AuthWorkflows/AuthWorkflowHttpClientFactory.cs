@@ -12,6 +12,8 @@ internal sealed class AuthWorkflowHttpClientFactory(AuthEmulatorSettings setting
 {
     public ConcurrentDictionary<string, byte> OwnedAccounts { get; } = new();
     public Func<string, Task>? AfterAccountCreated { get; set; }
+    public Func<Task>? AfterAccountLookup { get; set; }
+    public HttpStatusCode? LookupFailureStatus { get; set; }
 
     protected override HttpMessageHandler CreateHandler(CreateHttpClientArgs args) =>
         new AuthEmulatorRequestHandler(settings, new ConcurrentQueue<Uri>(),
@@ -26,7 +28,16 @@ internal sealed class AuthWorkflowHttpClientFactory(AuthEmulatorSettings setting
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            bool lookup = request.RequestUri!.AbsolutePath.EndsWith("/accounts:lookup", StringComparison.Ordinal);
+            if (lookup && owner.LookupFailureStatus is { } status)
+                return new HttpResponseMessage(status)
+                {
+                    Content = new StringContent($"{{\"error\":{{\"code\":{(int)status},\"message\":\"SYNTHETIC_LOOKUP_FAILURE\"}}}}")
+                };
+
             var response = await base.SendAsync(request, cancellationToken);
+            if (lookup && response.IsSuccessStatusCode && owner.AfterAccountLookup is { } afterLookup)
+                await afterLookup();
             if (response.IsSuccessStatusCode && request.Method == HttpMethod.Post &&
                 request.RequestUri!.AbsolutePath.EndsWith("/accounts", StringComparison.Ordinal))
             {

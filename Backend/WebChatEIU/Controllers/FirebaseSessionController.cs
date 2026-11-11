@@ -36,7 +36,7 @@ namespace WebChatEIU.Controllers
                 authUser = await FirebaseAuth.DefaultInstance
                     .GetUserAsync(uid);
             }
-            catch (FirebaseAuthException)
+            catch (FirebaseAuthException ex) when (ex.AuthErrorCode == AuthErrorCode.UserNotFound)
             {
                 return Unauthorized();
             }

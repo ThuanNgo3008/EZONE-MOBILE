@@ -122,6 +122,8 @@ namespace WebChatEIU
 
                     options.Events = new JwtBearerEvents
                     {
+                        OnTokenValidated = FirebaseBearerSession.ValidateAsync,
+                        OnChallenge = FirebaseBearerSession.ChallengeAsync,
                         OnMessageReceived = context =>
                         {
                             var accessToken =

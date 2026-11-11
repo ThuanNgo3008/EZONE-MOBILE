@@ -70,8 +70,11 @@ public sealed class HttpJwtSecurityTests
             "Audience" => host.Sign(unsigned, payload => payload["aud"] = "wrong-audience"),
             _ => throw new ArgumentOutOfRangeException(nameof(failure))
         };
+        // A premature account lookup would fail with 503 instead of the JWT challenge.
+        data.RejectLookups = true;
         using var rejected = await host.SendAsync(HttpMethod.Get, Identity, token);
         Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+        data.RejectLookups = false;
         await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.OK, host.Sign(unsigned));
     }
 
@@ -97,11 +100,11 @@ public sealed class HttpJwtSecurityTests
     }
 
     [Theory]
-    [InlineData("Deleted", HttpStatusCode.Unauthorized)]
-    [InlineData("Disabled", HttpStatusCode.Forbidden)]
-    [InlineData("Unverified", HttpStatusCode.Forbidden)]
+    [InlineData("Deleted", HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized)]
+    [InlineData("Disabled", HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized)]
+    [InlineData("Unverified", HttpStatusCode.OK, HttpStatusCode.Forbidden)]
     public async Task AccountEligibility_IsEnforcedBySessionAndMatchingAfterBearerAuthentication(
-        string state, HttpStatusCode sessionStatus)
+        string state, HttpStatusCode identityStatus, HttpStatusCode sessionStatus)
     {
         await using var data = new AuthWorkflowTestData();
         await using var host = new HttpSecurityHost(data);
@@ -111,29 +114,41 @@ public sealed class HttpJwtSecurityTests
         if (state == "Deleted") await data.Auth.DeleteUserAsync(uid);
         if (state == "Disabled") await data.Auth.UpdateUserAsync(new UserRecordArgs { Uid = uid, Disabled = true });
 
-        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.OK, token);
+        await ExpectAsync(host, HttpMethod.Get, Identity, identityStatus, token);
         await ExpectAsync(host, HttpMethod.Get, Session, sessionStatus, token);
-        await ExpectAsync(host, HttpMethod.Post, Find, HttpStatusCode.Conflict, token);
+        await ExpectAsync(host, HttpMethod.Post, Find,
+            state == "Unverified" ? HttpStatusCode.Conflict : HttpStatusCode.Unauthorized, token);
         Assert.False((await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync()).Exists);
     }
 
     [Fact]
-    public async Task KnownDefect_SessionStillAcceptsBearerFromBeforeRevocationCutoff()
+    public async Task SessionRejectsAuthTimeBeforeRevocationCutoffEvenWithNewerIssuedAt()
     {
         await using var data = new AuthWorkflowTestData();
         await using var host = new HttpSecurityHost(data);
         await host.StartAsync();
         var (uid, unsigned) = await host.SignInAsync();
-        var authTime = DateTimeOffset.UtcNow.AddMinutes(-10);
-        // Avoid relying on same-second ordering of emulator sign-in and revocation.
-        var token = host.Sign(unsigned, payload => payload["auth_time"] = authTime.ToUnixTimeSeconds());
         await data.Auth.RevokeRefreshTokensAsync(uid);
         var account = await data.Auth.GetUserAsync(uid);
-        Assert.True(account.TokensValidAfterTimestamp > authTime.UtcDateTime);
-        // Characterization: both routes currently accept the revoked session.
-        // Expected after remediation: HTTP 401 before either action runs.
-        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.OK, token);
-        await ExpectAsync(host, HttpMethod.Get, Session, HttpStatusCode.OK, token);
+        Assert.Equal(DateTimeKind.Utc, account.TokensValidAfterTimestamp.Kind);
+        var cutoff = new DateTimeOffset(account.TokensValidAfterTimestamp).ToUnixTimeSeconds();
+        Assert.InRange(cutoff, DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(),
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        // Simulate a refreshed token whose issuance time follows revocation,
+        // while its original session predates the cutoff by one second.
+        var token = host.Sign(unsigned, payload =>
+        {
+            payload["auth_time"] = cutoff - 1;
+            payload["iat"] = cutoff + 1;
+        });
+        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.Unauthorized, token);
+        await ExpectAsync(host, HttpMethod.Get, Session, HttpStatusCode.Unauthorized, token);
+        var atCutoff = host.Sign(unsigned, payload =>
+        {
+            payload["auth_time"] = cutoff;
+            payload["iat"] = cutoff;
+        });
+        await ExpectAsync(host, HttpMethod.Get, Session, HttpStatusCode.OK, atCutoff);
     }
 
     [Fact]
@@ -186,13 +201,10 @@ public sealed class HttpJwtSecurityTests
             await ExpectAsync(host, HttpMethod.Post, path + "/reports", HttpStatusCode.OK, member, Report);
             await ExpectAsync(host, HttpMethod.Post, path + "/reports", HttpStatusCode.Conflict, member, Report);
 
-            // Known defect: a disabled account can still read history when its profile remains active.
-            // Expected after remediation: HTTP 401 with no message content.
             await data.Auth.UpdateUserAsync(new UserRecordArgs { Uid = memberId, Disabled = true });
             using var disabledHistory = await host.SendAsync(HttpMethod.Get, Messages + room.RoomId, member);
-            Assert.Equal(HttpStatusCode.OK, disabledHistory.StatusCode);
-            var exposedMessage = Assert.Single((await disabledHistory.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("messages").EnumerateArray());
-            Assert.Equal("Hello from a fixture", exposedMessage.GetProperty("content").GetString());
+            Assert.Equal(HttpStatusCode.Unauthorized, disabledHistory.StatusCode);
+            Assert.DoesNotContain("Hello from a fixture", await disabledHistory.Content.ReadAsStringAsync());
         }
         finally
         {
@@ -244,20 +256,103 @@ public sealed class HttpJwtSecurityTests
     }
 
     [Fact]
-    public async Task KnownDefect_VerificationSyncReturnsEmpty500AfterAuthAccountDeletion()
+    public async Task VerificationSync_ReturnsControlled401WhenAccountDisappearsAfterAuthenticationLookup()
+    {
+        await using var data = new AuthWorkflowTestData();
+        await using var host = new HttpSecurityHost(data);
+        await host.StartAsync();
+        var (uid, unsigned) = await host.SignInAsync();
+        var token = host.Sign(unsigned);
+        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.OK, token);
+        data.AfterAccountLookup = async () =>
+        {
+            data.AfterAccountLookup = null;
+            await data.Auth.DeleteUserAsync(uid);
+        };
+        using var response = await host.SendAsync(HttpMethod.Post, Sync, token);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("Firebase account is unavailable.",
+            (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("message").GetString());
+    }
+
+    [Theory]
+    [InlineData("sub", "missing")]
+    [InlineData("user_id", "missing")]
+    [InlineData("user_id", "other-user")]
+    [InlineData("user_id", "array")]
+    [InlineData("auth_time", "missing")]
+    [InlineData("auth_time", "not-a-timestamp")]
+    [InlineData("auth_time", "numeric-string")]
+    [InlineData("auth_time", "future")]
+    [InlineData("auth_time", "array")]
+    [InlineData("auth_time", "milliseconds")]
+    [InlineData("auth_time", "fractional")]
+    public async Task InvalidSessionClaimsAreRejectedBeforeAccountLookup(string claim, string value)
+    {
+        await using var data = new AuthWorkflowTestData();
+        await using var host = new HttpSecurityHost(data);
+        await host.StartAsync();
+        var (_, unsigned) = await host.SignInAsync();
+        data.RejectLookups = true;
+        var token = host.Sign(unsigned, payload =>
+        {
+            if (value == "missing") payload.Remove(claim);
+            else if (value == "future") payload[claim] = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
+            else if (value == "numeric-string") payload[claim] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            else if (value == "array") payload[claim] = new[] { payload[claim] };
+            else if (value == "milliseconds") payload[claim] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            else if (value == "fractional") payload[claim] = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1.5;
+            else payload[claim] = value;
+        });
+        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.Unauthorized, token);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task AccountLookupFailure_ReturnsOneEmpty503WithoutExecutingAction(HttpStatusCode upstreamStatus)
+    {
+        await using var data = new AuthWorkflowTestData();
+        await using var host = new HttpSecurityHost(data);
+        await host.StartAsync();
+        var (uid, unsigned) = await host.SignInAsync();
+        data.LookupFailureStatus = upstreamStatus;
+        using var response = await host.SendAsync(HttpMethod.Post, Find, host.Sign(unsigned));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Empty(response.Headers.WwwAuthenticate);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+        Assert.False((await data.Database.Collection("randomMatchQueue").Document(uid).GetSnapshotAsync()).Exists);
+    }
+
+    [Fact]
+    public async Task VerificationSync_DoesNotMapUnrelatedLookupFailureTo401()
     {
         await using var data = new AuthWorkflowTestData();
         await using var host = new HttpSecurityHost(data);
         await host.StartAsync(useKestrel: true);
-        var (uid, unsigned) = await host.SignInAsync();
+        var (_, unsigned) = await host.SignInAsync();
+        data.AfterAccountLookup = () =>
+        {
+            data.RejectLookups = true;
+            return Task.CompletedTask;
+        };
+        await ExpectAsync(host, HttpMethod.Post, Sync, HttpStatusCode.InternalServerError, host.Sign(unsigned));
+    }
+
+    [Fact]
+    public async Task UnverifiedAccountCanResendAndSynchronizeAfterVerifying()
+    {
+        await using var data = new AuthWorkflowTestData();
+        await using var host = new HttpSecurityHost(data);
+        await host.StartAsync();
+        var (uid, unsigned) = await host.SignInAsync(verified: false);
         var token = host.Sign(unsigned);
-        await ExpectAsync(host, HttpMethod.Get, Identity, HttpStatusCode.OK, token);
-        await data.Auth.DeleteUserAsync(uid);
-        // Characterization: the uncaught lookup error currently produces an empty HTTP 500.
-        // Expected after remediation: controlled HTTP 401 for a deleted account.
-        using var response = await host.SendAsync(HttpMethod.Post, Sync, token);
-        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-        Assert.Empty(await response.Content.ReadAsStringAsync());
+        await ExpectAsync(host, HttpMethod.Post, Sync, HttpStatusCode.BadRequest, token);
+        var user = await data.Auth.GetUserAsync(uid);
+        await ExpectAsync(host, HttpMethod.Post, "/api/firebase-auth/resend-verification", HttpStatusCode.OK,
+            body: new { email = user.Email });
+        await data.VerifyEmailAsync(Assert.Single(data.Email.Attempts));
+        await ExpectAsync(host, HttpMethod.Post, Sync, HttpStatusCode.OK, token);
     }
 
     private static string CorruptSignature(string token)

@@ -48,6 +48,9 @@ internal sealed class AuthWorkflowTestData : IAsyncDisposable
     public FirebaseAuthService Service { get { AssertOwnership(); return service; } }
     public FirebaseAuth Auth { get { AssertOwnership(); return FirebaseAuth.GetAuth(app); } }
     public Func<string, Task>? AfterAccountCreated { set => factory.AfterAccountCreated = value; }
+    public Func<Task>? AfterAccountLookup { set => factory.AfterAccountLookup = value; }
+    public bool RejectLookups { set => factory.LookupFailureStatus = value ? HttpStatusCode.Forbidden : null; }
+    public HttpStatusCode? LookupFailureStatus { set => factory.LookupFailureStatus = value; }
 
     public static RegisterDto Registration() => new()
     {

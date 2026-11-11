@@ -71,8 +71,15 @@ namespace WebChatEIU.Controllers
             }
 
             // Kiểm tra email và đồng bộ IsActive
-            bool isVerified = await _authService
-                .SyncEmailVerificationAsync(uid);
+            bool isVerified;
+            try
+            {
+                isVerified = await _authService.SyncEmailVerificationAsync(uid);
+            }
+            catch (FirebaseAuthException ex) when (ex.AuthErrorCode == AuthErrorCode.UserNotFound)
+            {
+                return Unauthorized(new { message = "Firebase account is unavailable." });
+            }
 
             if (!isVerified)
             {
