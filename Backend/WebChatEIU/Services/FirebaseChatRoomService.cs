@@ -1,5 +1,8 @@
 ﻿using Google.Cloud.Firestore;
 using WebChatEIU.Models.Firestore;
+using System.Globalization;
+using System.Text;
+using Microsoft.AspNetCore.WebUtilities;
 
 namespace WebChatEIU.Services
 {
@@ -79,6 +82,72 @@ namespace WebChatEIU.Services
             return snapshot.ConvertTo<FirebaseChatRoom>();
         }
 
+
+        public async Task<(IReadOnlyList<FirebaseChatRoom> Rooms, string? NextCursor)> ListForMemberAsync(
+            string userId, int pageSize, string? cursor, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(userId) || pageSize is < 1 or > 50)
+                throw new ArgumentException("Invalid room listing parameters.");
+
+            var query = _rooms.Where(Filter.Or(
+                    Filter.EqualTo("User1Id", userId),
+                    Filter.EqualTo("User2Id", userId)))
+                .OrderByDescending("CreatedAt")
+                .OrderByDescending(FieldPath.DocumentId)
+                .Limit(pageSize + 1);
+
+            if (cursor is not null)
+            {
+                var (createdAt, roomId) = DecodeListCursor(cursor);
+                query = query.StartAfter(createdAt, _rooms.Document(roomId));
+            }
+
+            var snapshot = await query.GetSnapshotAsync(cancellationToken);
+            var rooms = snapshot.Documents.Take(pageSize).Select(doc =>
+            {
+                var room = doc.ConvertTo<FirebaseChatRoom>();
+                if (!doc.ContainsField("UpdatedAt"))
+                    room.UpdatedAt = room.CreatedAt;
+                return room;
+            }).ToArray();
+            if (snapshot.Count <= pageSize)
+                return (rooms, null);
+
+            var last = rooms[^1];
+            var position = last.CreatedAt.ToDateTime().Ticks.ToString(CultureInfo.InvariantCulture) + ":" + last.RoomId;
+            return (rooms, WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(position)));
+        }
+
+        private static (Timestamp CreatedAt, string RoomId) DecodeListCursor(string cursor)
+        {
+            if (cursor.Length is 0 or > 2048 ||
+                cursor.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+                throw new ArgumentException("Invalid room cursor.");
+
+            string position;
+            try
+            {
+                position = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(cursor));
+            }
+            catch (FormatException)
+            {
+                throw new ArgumentException("Invalid room cursor.");
+            }
+
+            var parts = position.Split(':', 2);
+            if (parts.Length != 2 ||
+                !long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var ticks) ||
+                ticks > DateTime.MaxValue.Ticks ||
+                string.IsNullOrWhiteSpace(parts[1]) || parts[1] is "." or ".." ||
+                parts[1].Contains('/') || Encoding.UTF8.GetByteCount(parts[1]) > 1500 ||
+                (parts[1].Length >= 4 && parts[1].StartsWith("__", StringComparison.Ordinal) &&
+                    parts[1].EndsWith("__", StringComparison.Ordinal)))
+            {
+                throw new ArgumentException("Invalid room cursor.");
+            }
+
+            return (Timestamp.FromDateTime(new DateTime(ticks, DateTimeKind.Utc)), parts[1]);
+        }
 
         public async Task<bool> CloseRoomAsync(
             string roomId,

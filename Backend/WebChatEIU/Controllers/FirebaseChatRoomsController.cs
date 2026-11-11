@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WebChatEIU.Services;
 using WebChatEIU.DTOs;
+using Grpc.Core;
 
 namespace WebChatEIU.Controllers
 {
@@ -83,6 +84,54 @@ namespace WebChatEIU.Controllers
                 room.Status,
                 room.MatchMode
             });
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> ListRooms(
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? cursor = null,
+            CancellationToken cancellationToken = default)
+        {
+            var uid = User.FindFirst("user_id")?.Value;
+            if (string.IsNullOrWhiteSpace(uid))
+                return Unauthorized();
+
+            try
+            {
+                var user = await _userService.GetByIdAsync(uid, cancellationToken);
+                if (!FirebaseMatchEligibilityService.HasEligibleProfile(user))
+                    return Forbid();
+
+                var (rooms, nextCursor) = await _chatRoomService.ListForMemberAsync(
+                    uid, pageSize, cursor, cancellationToken);
+                return Ok(new
+                {
+                    Rooms = rooms.Select(room =>
+                    {
+                        var isUser1 = room.User1Id == uid;
+                        return new
+                        {
+                            room.RoomId,
+                            room.Status,
+                            CreatedAt = room.CreatedAt.ToDateTime(),
+                            LastActivityAt = room.UpdatedAt.ToDateTime(),
+                            MyRole = isUser1 ? "User1" : "User2",
+                            // The listing must stay anonymous even for imported room documents.
+                            PartnerNickname = isUser1 ? "Anonymous Panda" : "Anonymous Fox"
+                        };
+                    }),
+                    NextCursor = nextCursor
+                });
+            }
+            catch (ArgumentException)
+            {
+                return BadRequest(new { message = "Invalid room listing parameters." });
+            }
+            catch (RpcException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                    new { message = "Room listing is temporarily unavailable." });
+            }
         }
 
         [HttpGet("{roomId}")]

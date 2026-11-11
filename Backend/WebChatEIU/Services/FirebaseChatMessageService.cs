@@ -88,6 +88,8 @@ namespace WebChatEIU.Services
 
 
                 transaction.Create(messageReference, message);
+                if (!snapshot.ContainsField("UpdatedAt") || message.CreatedAt.CompareTo(room.UpdatedAt) > 0)
+                    transaction.Update(roomReference, "UpdatedAt", message.CreatedAt);
             }, cancellationToken: cancellationToken);
 
             return message;
