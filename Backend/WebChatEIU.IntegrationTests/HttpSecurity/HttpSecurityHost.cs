@@ -27,7 +27,19 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
     private WebApplication? app;
     private HttpClient? client;
 
-    public async Task StartAsync(bool useKestrel = false)
+    public Uri LoopbackAddress
+    {
+        get
+        {
+            settings.AssertEnvironmentUnchanged();
+            var address = client?.BaseAddress;
+            if (address is null || address.Scheme != "http" || address.Host != "127.0.0.1")
+                throw new InvalidOperationException("Start the loopback Kestrel host first.");
+            return address;
+        }
+    }
+
+    public async Task StartAsync(bool useKestrel = false, bool strictExpiry = false)
     {
         settings.AssertEnvironmentUnchanged();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -56,6 +68,7 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
             options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration);
             options.TokenValidationParameters.ValidIssuer = issuer;
             options.TokenValidationParameters.ValidAudience = settings.ProjectId;
+            if (strictExpiry) options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
         });
 
         app = builder.Build();
@@ -117,7 +130,24 @@ internal sealed class HttpSecurityHost(AuthWorkflowTestData data) : IAsyncDispos
     public async ValueTask DisposeAsync()
     {
         client?.Dispose();
-        if (app is not null) await app.DisposeAsync();
-        signer.Dispose();
+        try
+        {
+            if (app is not null)
+            {
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    await app.StopAsync(timeout.Token);
+                }
+                finally
+                {
+                    await app.DisposeAsync();
+                }
+            }
+        }
+        finally
+        {
+            signer.Dispose();
+        }
     }
 }

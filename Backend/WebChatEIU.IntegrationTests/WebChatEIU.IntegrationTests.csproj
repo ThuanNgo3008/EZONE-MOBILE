@@ -8,6 +8,7 @@
     <VSTestResultsDirectory>$(MSBuildProjectDirectory)/obj/TestResults</VSTestResultsDirectory>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.33" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.0.33" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.5.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
