@@ -58,13 +58,14 @@ internal sealed class AuthWorkflowTestData : IAsyncDisposable
     };
 
     public async Task<string> AccountWithProfileAsync(bool verified = true, bool active = true,
-        bool banned = false, bool deleted = false, bool disabled = false)
+        bool banned = false, bool deleted = false, bool disabled = false, string? password = null)
     {
         var dto = Registration();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var account = await Auth.CreateUserAsync(new UserRecordArgs
         {
-            Email = dto.Email, DisplayName = dto.Fullname, EmailVerified = verified, Disabled = disabled
+            Email = dto.Email, DisplayName = dto.Fullname, EmailVerified = verified, Disabled = disabled,
+            Password = password
         }, timeout.Token);
         await Users.CreateAsync(new FirebaseUser
         {

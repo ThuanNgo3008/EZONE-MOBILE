@@ -38,33 +38,42 @@ namespace WebChatEIU
                 FirestoreDb.Create("ezone-afa80")
             );
 
-            builder.Services.AddScoped<FirebaseTokenService>();
             builder.Services.AddSingleton(FirebaseAuth.DefaultInstance);
-            builder.Services.AddScoped<FirebaseMatchEligibilityService>();
-            builder.Services.AddScoped<FirebaseAuthService>();
-            builder.Services.AddScoped<FirebaseUserService>();
-            builder.Services.AddScoped<FirebaseChatRoomService>();
-            builder.Services.AddScoped<FirebaseChatMessageService>();
-            builder.Services.AddScoped<FirebaseMatchHistoryService>();
-            builder.Services.AddScoped<FirebaseTemporaryMessageCleanupService>();
-            builder.Services.AddScoped<FirebaseReportService>();
-            builder.Services.AddScoped<FirebaseMatchReservationService>();
-            builder.Services.AddScoped<FirebaseRandomMatchQueueService>();
             builder.Services.AddHostedService<FirebaseRoomExpirationWorker>();
+            builder.Services.AddScoped<IEmailService, EmailService>();
+            AddApiServices(builder.Services);
+
+            var app = builder.Build();
+            ConfigureApiPipeline(app);
+            app.Run();
+        }
+
+        public static void AddApiServices(IServiceCollection services)
+        {
+            services.AddScoped<FirebaseTokenService>();
+            services.AddScoped<FirebaseMatchEligibilityService>();
+            services.AddScoped<FirebaseAuthService>();
+            services.AddScoped<FirebaseUserService>();
+            services.AddScoped<FirebaseChatRoomService>();
+            services.AddScoped<FirebaseChatMessageService>();
+            services.AddScoped<FirebaseMatchHistoryService>();
+            services.AddScoped<FirebaseTemporaryMessageCleanupService>();
+            services.AddScoped<FirebaseReportService>();
+            services.AddScoped<FirebaseMatchReservationService>();
+            services.AddScoped<FirebaseRandomMatchQueueService>();
 
             // ===========================
             // SERVICES
             // ===========================
-            builder.Services.AddControllers();
-            builder.Services.AddSignalR();
+            services.AddControllers();
+            services.AddSignalR();
 
-            builder.Services.AddSingleton<ModerationService>();
-            builder.Services.AddScoped<IEmailService, EmailService>();
+            services.AddSingleton<ModerationService>();
 
             // ===========================
             // RATE LIMITING
             // ===========================
-            builder.Services.AddRateLimiter(options =>
+            services.AddRateLimiter(options =>
             {
                 options.RejectionStatusCode =
                     StatusCodes.Status429TooManyRequests;
@@ -86,7 +95,7 @@ namespace WebChatEIU
             // ===========================
             // CORS
             // ===========================
-            builder.Services.AddCors(options =>
+            services.AddCors(options =>
             {
                 options.AddPolicy("AllowReactApp", policy =>
                 {
@@ -100,7 +109,7 @@ namespace WebChatEIU
             // ===========================
             // AUTHENTICATION
             // ===========================
-            builder.Services
+            services
                 .AddAuthentication("Firebase")
                 .AddJwtBearer("Firebase", options =>
                 {
@@ -151,7 +160,7 @@ namespace WebChatEIU
             // ===========================
             // AUTHORIZATION
             // ===========================
-            builder.Services.AddAuthorization(options =>
+            services.AddAuthorization(options =>
             {
                 // Firebase authentication policy
                 options.AddPolicy("FirebaseUser", policy =>
@@ -164,9 +173,9 @@ namespace WebChatEIU
             // ===========================
             // SWAGGER
             // ===========================
-            builder.Services.AddEndpointsApiExplorer();
+            services.AddEndpointsApiExplorer();
 
-            builder.Services.AddSwaggerGen(options =>
+            services.AddSwaggerGen(options =>
             {
                 options.SwaggerDoc("v1", new OpenApiInfo
                 {
@@ -202,12 +211,10 @@ namespace WebChatEIU
                         }
                     });
             });
+        }
 
-            // ===========================
-            // BUILD APPLICATION
-            // ===========================
-            var app = builder.Build();
-
+        public static void ConfigureApiPipeline(WebApplication app)
+        {
             // ===========================
             // MIDDLEWARE
             // ===========================
@@ -235,8 +242,6 @@ namespace WebChatEIU
             // ===========================
             app.MapControllers();
             app.MapHub<FirebaseChatHub>("/firebaseChatHub");
-
-            app.Run();
         }
     }
 }
