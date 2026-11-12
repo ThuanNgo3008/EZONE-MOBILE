@@ -1,0 +1,12 @@
+{
+  "name": "ezone-firestore-regression-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local-only Firestore regression tooling",
+  "devDependencies": {
+    "firebase-tools": "15.34.2"
+  },
+  "scripts": {
+    "start": "firebase emulators:start --only firestore,auth --project demo-ezone-regression --config firebase.json"
+  }
+}

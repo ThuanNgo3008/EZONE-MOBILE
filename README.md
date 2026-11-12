@@ -1,24 +1,25 @@
 # EZone — Anonymous Chat (Mobile)
 
-Ứng dụng chat ẩn danh dành riêng cho sinh viên EIU (bắt buộc email `@eiu.edu.vn`). Người dùng được ghép ngẫu nhiên với một người lạ để trò chuyện dưới nickname ẩn danh, có thể dần "mở khoá" danh tính cho nhau khi đủ mức độ tương tác, hoặc report nếu gặp hành vi vi phạm.
+Ứng dụng chat ẩn danh dành riêng cho sinh viên EIU (`@eiu.edu.vn`), sử dụng Firebase Authentication, Firestore và SignalR. Backend hiện hỗ trợ ghép cặp, xác nhận Ready, chat tạm thời, quyết định tiếp tục và báo cáo vi phạm.
 
 ## Tính năng chính
 
-- **Đăng ký / kích hoạt tài khoản** bằng email trường, mã kích hoạt xác thực.
-- **Ghép cặp ẩn danh ngẫu nhiên** (matchmaking hàng đợi) — không ai biết mình đang chat với ai.
-- **Chat real-time** qua SignalR: gửi/nhận tin nhắn, typing indicator, thông báo khi đối phương rời phòng.
-- **Kiểm duyệt nội dung tự động**: chặn số điện thoại, email, link, tên mạng xã hội... gửi lên sẽ bị khoá tài khoản ngay.
-- **Reveal danh tính theo affinity score**: cả 2 người cùng đồng ý mới lộ diện (fullname, avatar, ngành học, social link).
-- **Report / kiểm duyệt**: người dùng report đối phương, admin xem, xử lý ban hoặc xoá report.
-- **Quản trị (Admin)**: xem danh sách report, ban tài khoản vi phạm.
+- Firebase registration, email verification, and session validation.
+- Random Match with heartbeat, reservations, and two-sided ready confirmation.
+- Five-minute temporary chat and two-minute continuation decisions.
+- SignalR chat, Firestore persistence, moderation, reporting, and evidence preservation.
+- Background expiration and cleanup processing.
+
+The existing web/mobile clients require rebuilding against the current backend.
+See [the backend API documentation](Backend/README.md) for supported operations.
 
 ## Tech stack
 
 **Backend** — `Backend/`
 - ASP.NET Core Web API (.NET)
-- Entity Framework Core + SQL Server
+- Firebase Authentication + Google Cloud Firestore
 - SignalR (real-time chat)
-- JWT Authentication + BCrypt (hash mật khẩu)
+- Firebase ID Token validation (JWT bearer)
 - Swagger (API docs)
 
 **Frontend (Web)** — `Frontend/Chat/`
@@ -53,7 +54,7 @@ cd Backend/WebChatEIU
 dotnet restore
 dotnet run
 ```
-Kiểm tra `appsettings.json` để cấu hình connection string SQL Server. Sau khi chạy, xem API docs tại `/swagger`.
+See [Backend setup and current API](Backend/README.md) for Firebase credentials, email configuration, and runtime safety. Starting the API also starts its Firestore worker.
 
 ### Frontend (Web)
 ```bash

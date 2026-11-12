@@ -197,6 +197,19 @@ const AdminReportListScreen = ({ navigation }) => {
                 </View>
                 <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
 
+                {/* Ban source badge */}
+                {item.reportedUserIsBanned && (
+                  <View style={styles.banBadge}>
+                    <Text style={styles.banBadgeText}>
+                      {item.reportedUserBanSource === 'Admin'
+                        ? '🔨 Banned by Admin'
+                        : item.reportedUserBanSource === 'SystemAuto'
+                        ? '🤖 Auto-banned (System)'
+                        : '🚫 Banned'}
+                    </Text>
+                  </View>
+                )}
+
                 <Pressable
                   style={styles.viewDetailButton}
                   onPress={() => navigation.navigate('AdminReportDetail', { report: item })}
@@ -206,10 +219,17 @@ const AdminReportListScreen = ({ navigation }) => {
 
                 <View style={styles.actionRow}>
                   <Pressable
-                    style={[styles.actionButton, styles.banButton]}
+                    style={[
+                      styles.actionButton,
+                      styles.banButton,
+                      item.reportedUserIsBanned && styles.banButtonDisabled,
+                    ]}
                     onPress={() => setBanTarget(item)}
+                    disabled={item.reportedUserIsBanned}
                   >
-                    <Text style={styles.banButtonText}>Ban User</Text>
+                    <Text style={styles.banButtonText}>
+                      {item.reportedUserIsBanned ? 'Banned' : 'Ban User'}
+                    </Text>
                   </Pressable>
                   <Pressable
                     style={[styles.actionButton, styles.deleteButton]}
@@ -439,6 +459,9 @@ const styles = StyleSheet.create({
   actionButton: { flex: 1, borderWidth: 2, borderColor: COLORS.border, borderRadius: 10, paddingVertical: 9, alignItems: 'center' },
   banButton: { backgroundColor: '#ED2553' },
   banButtonText: { color: '#FFFFFF', fontFamily: fonts.bold, fontWeight: '700', fontSize: 12 },
+  banButtonDisabled: { backgroundColor: '#9CA3AF' },
+  banBadge: { backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, marginBottom: 8, alignSelf: 'flex-start', borderWidth: 1, borderColor: '#F59E0B' },
+  banBadgeText: { fontSize: 11, fontFamily: fonts.bold, fontWeight: '700', color: '#92400E' },
   deleteButton: { backgroundColor: '#FFFFFF' },
   deleteButtonText: { color: COLORS.danger, fontFamily: fonts.bold, fontWeight: '700', fontSize: 12 },
   paginationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, marginBottom: 16 },

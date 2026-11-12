@@ -4,3 +4,4 @@
 export const BASE_URL = 'http://10.0.2.2:5044';
 export const API_BASE_URL = `${BASE_URL}/api`;
 export const HUB_URL = `${BASE_URL}/chatHub`;
+export const FIREBASE_API_KEY = 'AIzaSyBvnQ92IG9KZugc2KerMRCzPiAZ2A1-nKU';

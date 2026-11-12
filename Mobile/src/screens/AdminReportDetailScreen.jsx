@@ -17,6 +17,8 @@ export default function AdminReportDetailScreen({ route, navigation }) {
   const [status, setStatus] = useState(report?.status || 'Pending');
   const [saving, setSaving] = useState(false);
   const [banning, setBanning] = useState(false);
+  const [isBanned, setIsBanned] = useState(report?.reportedUserIsBanned || false);
+  const [banSource, setBanSource] = useState(report?.reportedUserBanSource || 'None');
 
   if (!report) {
     return (
@@ -46,13 +48,14 @@ export default function AdminReportDetailScreen({ route, navigation }) {
     setBanning(true);
     try {
       await banReportedUser(report.reportId);
-      navigation.goBack();
+      setIsBanned(true);
+      setBanSource('Admin');
     } catch (error) {
       Alert.alert('Ban failed', error.message || 'Please try again.');
     } finally {
       setBanning(false);
     }
-  };
+  }; 
 
   return (
     <Screen>
@@ -76,6 +79,19 @@ export default function AdminReportDetailScreen({ route, navigation }) {
         <Text style={styles.text}>{formatDate(report.createdAt)}</Text>
       </InfoCard>
 
+      {/* Ban source badge */}
+      {isBanned && (
+        <View style={styles.banBadge}>
+          <Text style={styles.banBadgeText}>
+            {banSource === 'Admin'
+              ? '🔨 Banned by Admin'
+              : banSource === 'SystemAuto'
+              ? '🤖 Auto-banned (System)'
+              : '🚫 Banned'}
+          </Text>
+        </View>
+      )}
+
       <InfoCard title="Status" style={styles.card}>
         <View style={styles.chipRow}>
           {STATUS_OPTIONS.map(opt => (
@@ -98,8 +114,16 @@ export default function AdminReportDetailScreen({ route, navigation }) {
         {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.saveText}>Save Status</Text>}
       </Pressable>
 
-      <Pressable style={[styles.actionButton, styles.banButton]} onPress={handleBan} disabled={banning}>
-        {banning ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.banText}>Ban Reported User</Text>}
+      <Pressable
+        style={[styles.actionButton, isBanned ? styles.banButtonDisabled : styles.banButton]}
+        onPress={handleBan}
+        disabled={banning || isBanned}
+      >
+        {banning ? (
+          <ActivityIndicator color="#FFFFFF" />
+        ) : (
+          <Text style={styles.banText}>{isBanned ? 'Banned' : 'Ban Reported User'}</Text>
+        )}
       </Pressable>
 
       <CartoonButton title="BACK" variant="secondary" onPress={() => navigation.goBack()} style={styles.backButton} />
@@ -152,6 +176,9 @@ const styles = StyleSheet.create({
   saveText: { color: '#FFFFFF', fontFamily: fonts.black, fontWeight: '900', fontSize: 14 },
   banButton: { backgroundColor: colors.danger },
   banText: { color: '#FFFFFF', fontFamily: fonts.black, fontWeight: '900', fontSize: 14 },
+  banButtonDisabled: { backgroundColor: '#9CA3AF' },
+  banBadge: { backgroundColor: '#FEF3C7', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 14, alignSelf: 'flex-start', borderWidth: 1.5, borderColor: '#F59E0B' },
+  banBadgeText: { fontSize: 13, fontFamily: fonts.bold, fontWeight: '700', color: '#92400E' },
   disabled: { opacity: 0.5 },
   backButton: { marginTop: 4 },
 });
